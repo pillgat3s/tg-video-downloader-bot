@@ -134,19 +134,57 @@ def reencode_h264(input_path: str) -> str:
     return output_path
 
 
+def _download_youtube_pytubefix(url: str, output_dir: str) -> tuple[str, dict]:
+    """Try downloading a YouTube video via pytubefix (bypasses GVS PO Token requirement)."""
+    from pytubefix import YouTube
+    from pytubefix.exceptions import VideoUnavailable
+
+    yt = YouTube(url, use_po_token=True)
+    # Try progressive (pre-muxed) up to 1080p first
+    stream = (
+        yt.streams.filter(progressive=True, file_extension="mp4")
+        .order_by("resolution").desc().first()
+    )
+    if not stream:
+        # Fall back to highest-res video-only + best audio, merge with ffmpeg
+        video_stream = yt.streams.filter(only_video=True).order_by("resolution").desc().first()
+        audio_stream = yt.streams.filter(only_audio=True).order_by("abr").desc().first()
+        if not video_stream:
+            raise RuntimeError("No streams available via pytubefix")
+        vpath = video_stream.download(output_path=output_dir, filename="yt_video")
+        apath = audio_stream.download(output_path=output_dir, filename="yt_audio") if audio_stream else None
+        merged = os.path.join(output_dir, "yt_merged.mp4")
+        if apath:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", vpath, "-i", apath,
+                 "-c:v", "copy", "-c:a", "aac", "-shortest", merged],
+                check=True, capture_output=True,
+            )
+        else:
+            merged = vpath
+        path = merged
+    else:
+        path = stream.download(output_path=output_dir, filename="yt_video.mp4")
+
+    path = reencode_h264(path)
+    info = {
+        "title": yt.title,
+        "duration": yt.length,
+        "width": None,
+        "height": None,
+    }
+    return path, info
+
+
 def download_video(url: str, output_path: str, yt_cookies_path: str | None = None) -> tuple[str, dict]:
-    opts = build_ydl_opts(output_path, url, yt_cookies_path)
     if is_youtube_url(url):
-        # Log available formats so we can see what YouTube is actually serving
-        probe_opts = {**opts, "quiet": True, "simulate": True, "skip_download": True}
+        output_dir = str(Path(output_path).parent)
         try:
-            with yt_dlp.YoutubeDL(probe_opts) as ydl:
-                info_probe = ydl.extract_info(url, download=False)
-                fmts = info_probe.get("formats", [])
-                logger.info("YT available formats for %s: %s", url,
-                            [(f.get("format_id"), f.get("ext"), f.get("height")) for f in fmts])
-        except Exception as probe_err:
-            logger.warning("YT format probe failed: %s", probe_err)
+            return _download_youtube_pytubefix(url, output_dir)
+        except Exception as e:
+            logger.warning("pytubefix failed (%s), falling back to yt-dlp", e)
+
+    opts = build_ydl_opts(output_path, url, yt_cookies_path)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         p = Path(ydl.prepare_filename(info))
