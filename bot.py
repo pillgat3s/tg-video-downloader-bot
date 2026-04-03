@@ -1,5 +1,6 @@
 import os
 import re
+import base64
 import logging
 import tempfile
 from pathlib import Path
@@ -15,10 +16,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-IG_USERNAME = os.environ.get("INSTAGRAM_USERNAME")
-IG_PASSWORD = os.environ.get("INSTAGRAM_PASSWORD")
 MAX_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+# cookies.txt path — can be a real file or written from the env var below
 COOKIES_FILE = Path("cookies.txt")
+
+# Optional: base64-encoded contents of a cookies.txt file.
+# On Railway, set INSTAGRAM_COOKIES to: base64 -i cookies.txt
+# The bot writes it to disk on startup so yt-dlp can use it.
+_COOKIES_B64 = os.environ.get("INSTAGRAM_COOKIES")
+if _COOKIES_B64 and not COOKIES_FILE.exists():
+    try:
+        COOKIES_FILE.write_bytes(base64.b64decode(_COOKIES_B64))
+        logger.info("Wrote cookies.txt from INSTAGRAM_COOKIES env var")
+    except Exception:
+        logger.warning("Failed to decode INSTAGRAM_COOKIES — Instagram may not work")
 
 URL_PATTERN = re.compile(
     r"https?://(www\.)?"
@@ -33,27 +45,19 @@ def extract_urls(text: str) -> list[str]:
     return [m.group() for m in URL_PATTERN.finditer(text)]
 
 
-
 def build_ydl_opts(output_path: str, url: str) -> dict:
     opts = {
         "outtmpl": output_path,
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,  # keep enabled so errors appear in Railway logs
+        "no_warnings": False,
     }
 
-    is_instagram = "instagram.com" in url or "instagr.am" in url
-    is_tiktok = "tiktok.com" in url
-
-    if is_tiktok:
+    if "tiktok.com" in url:
         opts["extractor_args"] = {
             "tiktok": {"download_without_watermark": True}
         }
-
-    if is_instagram and IG_USERNAME and IG_PASSWORD:
-        opts["username"] = IG_USERNAME
-        opts["password"] = IG_PASSWORD
 
     if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
@@ -62,16 +66,13 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
 
 
 def download_video(url: str, output_path: str) -> str:
-    """Download video, return final file path."""
+    """Download video and return the final file path."""
     opts = build_ydl_opts(output_path, url)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        # yt-dlp may append extension; get actual filename
         final = ydl.prepare_filename(info)
-        # If merged/converted, yt-dlp changes extension to mp4
         p = Path(final)
         if not p.exists():
-            # Try with .mp4 extension
             p = p.with_suffix(".mp4")
         return str(p)
 
@@ -126,7 +127,7 @@ async def process_url(update: Update, url: str) -> None:
                 )
             await status_msg.delete()
 
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error for %s", url)
         await status_msg.edit_text("An unexpected error occurred. Please try again.")
 
