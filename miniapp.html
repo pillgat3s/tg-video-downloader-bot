@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Select Start Position</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--tg-theme-bg-color, #1c1c1e);
+      color: var(--tg-theme-text-color, #ffffff);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 20px 100px; /* bottom pad for MainButton */
+      gap: 32px;
+    }
+
+    .header {
+      text-align: center;
+    }
+    .header h1 {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .header p {
+      font-size: 14px;
+      color: var(--tg-theme-hint-color, #8e8e93);
+    }
+
+    .player {
+      width: 100%;
+      max-width: 380px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* Play/Pause button */
+    .play-btn {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: none;
+      background: var(--tg-theme-button-color, #2ea6ff);
+      color: var(--tg-theme-button-text-color, #fff);
+      font-size: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      align-self: center;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    .play-btn:active { opacity: 0.7; }
+
+    /* Time display */
+    .times {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      color: var(--tg-theme-hint-color, #8e8e93);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .position-display {
+      text-align: center;
+      font-size: 42px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -1px;
+      line-height: 1;
+    }
+
+    /* Seek slider */
+    .seek-wrap {
+      position: relative;
+      width: 100%;
+    }
+
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--tg-theme-hint-color, #48484a);
+      outline: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--tg-theme-button-color, #2ea6ff);
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--tg-theme-button-color, #2ea6ff);
+      cursor: pointer;
+      border: none;
+    }
+
+    /* Progress fill via CSS custom property */
+    input[type="range"] {
+      background: linear-gradient(
+        to right,
+        var(--tg-theme-button-color, #2ea6ff) 0%,
+        var(--tg-theme-button-color, #2ea6ff) var(--progress, 0%),
+        var(--tg-theme-hint-color, #48484a) var(--progress, 0%),
+        var(--tg-theme-hint-color, #48484a) 100%
+      );
+    }
+
+    .loading {
+      font-size: 15px;
+      color: var(--tg-theme-hint-color, #8e8e93);
+      text-align: center;
+    }
+
+    .error {
+      color: #ff453a;
+      text-align: center;
+      font-size: 15px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Select Start Position</h1>
+    <p>Seek to the part of the song you want, then tap Confirm.</p>
+  </div>
+
+  <div id="loading" class="loading">Loading audio…</div>
+  <div id="error" class="error" style="display:none"></div>
+
+  <div class="player" id="player" style="display:none">
+    <div class="position-display" id="pos">0:00</div>
+
+    <div class="seek-wrap">
+      <input type="range" id="seek" min="0" max="100" value="0" step="0.01" />
+    </div>
+
+    <div class="times">
+      <span id="cur-time">0:00</span>
+      <span id="dur-time">0:00</span>
+    </div>
+
+    <button class="play-btn" id="play-btn">▶</button>
+  </div>
+
+  <audio id="audio" preload="auto"></audio>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token');
+    const hintDuration = parseFloat(params.get('duration') || '0');
+
+    const audio = document.getElementById('audio');
+    const seek = document.getElementById('seek');
+    const posEl = document.getElementById('pos');
+    const curEl = document.getElementById('cur-time');
+    const durEl = document.getElementById('dur-time');
+    const playBtn = document.getElementById('play-btn');
+    const playerEl = document.getElementById('player');
+    const loadingEl = document.getElementById('loading');
+    const errorEl = document.getElementById('error');
+
+    function fmt(secs) {
+      const s = Math.floor(secs);
+      const m = Math.floor(s / 60);
+      return `${m}:${String(s % 60).padStart(2, '0')}`;
+    }
+
+    function updateUI() {
+      const cur = audio.currentTime;
+      const dur = audio.duration || hintDuration || 1;
+      const pct = (cur / dur) * 100;
+      seek.value = cur;
+      seek.style.setProperty('--progress', pct.toFixed(2) + '%');
+      posEl.textContent = fmt(cur);
+      curEl.textContent = fmt(cur);
+    }
+
+    function showError(msg) {
+      loadingEl.style.display = 'none';
+      errorEl.style.display = '';
+      errorEl.textContent = msg;
+    }
+
+    // Load audio
+    audio.src = `/audio/${token}`;
+
+    audio.addEventListener('loadedmetadata', () => {
+      seek.max = audio.duration;
+      durEl.textContent = fmt(audio.duration);
+      loadingEl.style.display = 'none';
+      playerEl.style.display = 'flex';
+      updateUI();
+    });
+
+    audio.addEventListener('timeupdate', updateUI);
+
+    audio.addEventListener('ended', () => {
+      playBtn.textContent = '▶';
+    });
+
+    audio.addEventListener('error', () => {
+      showError('Failed to load audio. Please try again.');
+    });
+
+    // Set max from hint while metadata loads (so slider isn't stuck at 100)
+    if (hintDuration > 0) {
+      seek.max = hintDuration;
+      durEl.textContent = fmt(hintDuration);
+    }
+
+    // Seek slider
+    let isSeeking = false;
+    seek.addEventListener('mousedown', () => { isSeeking = true; });
+    seek.addEventListener('touchstart', () => { isSeeking = true; }, { passive: true });
+    seek.addEventListener('input', () => {
+      audio.currentTime = parseFloat(seek.value);
+      updateUI();
+    });
+    seek.addEventListener('mouseup', () => { isSeeking = false; });
+    seek.addEventListener('touchend', () => { isSeeking = false; });
+
+    // Play/Pause
+    playBtn.addEventListener('click', () => {
+      if (audio.paused) {
+        audio.play();
+        playBtn.textContent = '⏸';
+      } else {
+        audio.pause();
+        playBtn.textContent = '▶';
+      }
+    });
+
+    // Telegram MainButton — confirm position
+    tg.MainButton.setText('✓ Confirm this position');
+    tg.MainButton.show();
+    tg.MainButton.onClick(() => {
+      const startSec = Math.floor(audio.currentTime);
+      tg.sendData(JSON.stringify({ start_sec: startSec }));
+    });
+  </script>
+</body>
+</html>
