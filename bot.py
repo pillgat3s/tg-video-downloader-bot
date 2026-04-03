@@ -97,23 +97,26 @@ def downloading_message(url: str) -> str:
 def build_ydl_opts(output_path: str, url: str, yt_cookies_path: str | None = None) -> dict:
     opts = {
         "outtmpl": output_path,
-        "format": (
-            "bestvideo[vcodec^=avc][ext=mp4]+bestaudio[ext=m4a]"
-            "/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-            "/bestvideo+bestaudio/best"
-        ),
         "merge_output_format": "mp4",
         "quiet": False,
         "no_warnings": False,
     }
-    if "tiktok.com" in url:
-        opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
     if is_youtube_url(url):
+        # tv_embedded has limited format availability; permissive string since we re-encode anyway
+        opts["format"] = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
         opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "web_creator"]}}
         if yt_cookies_path:
             opts["cookiefile"] = yt_cookies_path
         elif YT_COOKIES_FILE.exists():
             opts["cookiefile"] = str(YT_COOKIES_FILE)
+    else:
+        opts["format"] = (
+            "bestvideo[vcodec^=avc][ext=mp4]+bestaudio[ext=m4a]"
+            "/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+            "/bestvideo+bestaudio/best"
+        )
+    if "tiktok.com" in url:
+        opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
     if is_instagram_url(url) and COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
