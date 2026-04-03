@@ -2,164 +2,218 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Select Start Position</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    :root {
+      --accent:      var(--tg-theme-button-color, #2ea6ff);
+      --accent-t:    var(--tg-theme-button-text-color, #fff);
+      --bg:          var(--tg-theme-bg-color, #1c1c1e);
+      --text:        var(--tg-theme-text-color, #ffffff);
+      --hint:        var(--tg-theme-hint-color, #8e8e93);
+      --secondary-bg:var(--tg-theme-secondary-bg-color, #2c2c2e);
+    }
+
     body {
-      background: var(--tg-theme-bg-color, #1c1c1e);
-      color: var(--tg-theme-text-color, #ffffff);
+      background: var(--bg);
+      color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      padding: 24px 20px 100px; /* bottom pad for MainButton */
-      gap: 32px;
+      padding: 28px 20px 130px;
+      gap: 24px;
+      -webkit-tap-highlight-color: transparent;
     }
 
-    .header {
-      text-align: center;
-    }
-    .header h1 {
-      font-size: 20px;
-      font-weight: 700;
-      margin-bottom: 6px;
-    }
-    .header p {
-      font-size: 14px;
-      color: var(--tg-theme-hint-color, #8e8e93);
-    }
+    .header { text-align: center; }
+    .header h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    .header p  { font-size: 14px; color: var(--hint); line-height: 1.4; }
 
-    .player {
-      width: 100%;
-      max-width: 380px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-
-    /* Play/Pause button */
-    .play-btn {
-      width: 64px;
-      height: 64px;
-      border-radius: 50%;
-      border: none;
-      background: var(--tg-theme-button-color, #2ea6ff);
-      color: var(--tg-theme-button-text-color, #fff);
-      font-size: 24px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      align-self: center;
-      flex-shrink: 0;
-      transition: opacity 0.15s;
-    }
-    .play-btn:active { opacity: 0.7; }
-
-    /* Time display */
-    .times {
-      display: flex;
-      justify-content: space-between;
-      font-size: 13px;
-      color: var(--tg-theme-hint-color, #8e8e93);
+    /* Big time display */
+    .time-big {
+      font-size: 54px;
+      font-weight: 800;
       font-variant-numeric: tabular-nums;
-    }
-
-    .position-display {
-      text-align: center;
-      font-size: 42px;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-      letter-spacing: -1px;
+      letter-spacing: -2px;
       line-height: 1;
     }
 
-    /* Seek slider */
-    .seek-wrap {
-      position: relative;
+    /* Waveform */
+    .waveform-wrap {
       width: 100%;
+      max-width: 420px;
+      position: relative;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas#waveform {
+      width: 100%;
+      height: 80px;
+      display: block;
+      border-radius: 8px;
+      touch-action: none;
+    }
+    .wave-loading {
+      height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--hint);
+      font-size: 13px;
+      background: var(--secondary-bg);
+      border-radius: 8px;
     }
 
-    input[type="range"] {
+    /* Time labels under waveform */
+    .times {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--hint);
+      font-variant-numeric: tabular-nums;
+      width: 100%;
+      max-width: 420px;
+      margin-top: -16px;
+    }
+
+    /* Fine-tune precision slider */
+    .fine-wrap {
+      width: 100%;
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .fine-label {
+      text-align: center;
+      font-size: 12px;
+      color: var(--hint);
+    }
+    input[type="range"]#fine-seek {
       -webkit-appearance: none;
       appearance: none;
       width: 100%;
       height: 6px;
       border-radius: 3px;
-      background: var(--tg-theme-hint-color, #48484a);
       outline: none;
       cursor: pointer;
+      background: linear-gradient(
+        to right,
+        var(--secondary-bg) 0%,
+        var(--secondary-bg) calc(50% - 1px),
+        var(--accent) calc(50% - 1px),
+        var(--accent) calc(50% + 1px),
+        var(--secondary-bg) calc(50% + 1px),
+        var(--secondary-bg) 100%
+      );
     }
-    input[type="range"]::-webkit-slider-thumb {
+    input[type="range"]#fine-seek::-webkit-slider-thumb {
       -webkit-appearance: none;
-      width: 22px;
-      height: 22px;
+      width: 24px;
+      height: 24px;
       border-radius: 50%;
-      background: var(--tg-theme-button-color, #2ea6ff);
+      background: var(--accent);
       cursor: pointer;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
     }
-    input[type="range"]::-moz-range-thumb {
-      width: 22px;
-      height: 22px;
+    input[type="range"]#fine-seek::-moz-range-thumb {
+      width: 24px;
+      height: 24px;
       border-radius: 50%;
-      background: var(--tg-theme-button-color, #2ea6ff);
+      background: var(--accent);
       cursor: pointer;
       border: none;
     }
-
-    /* Progress fill via CSS custom property */
-    input[type="range"] {
-      background: linear-gradient(
-        to right,
-        var(--tg-theme-button-color, #2ea6ff) 0%,
-        var(--tg-theme-button-color, #2ea6ff) var(--progress, 0%),
-        var(--tg-theme-hint-color, #48484a) var(--progress, 0%),
-        var(--tg-theme-hint-color, #48484a) 100%
-      );
+    .fine-ends {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--hint);
+      font-variant-numeric: tabular-nums;
     }
 
-    .loading {
-      font-size: 15px;
-      color: var(--tg-theme-hint-color, #8e8e93);
+    /* Play / Pause */
+    .play-btn {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      color: var(--accent-t);
+      font-size: 22px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+    }
+    .play-btn:active { opacity: 0.7; }
+
+    /* Confirm button (always visible, MainButton is additional) */
+    .confirm-btn {
+      width: 100%;
+      max-width: 420px;
+      padding: 16px;
+      border: none;
+      border-radius: 14px;
+      background: var(--accent);
+      color: var(--accent-t);
+      font-size: 17px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .confirm-btn:active { opacity: 0.75; }
+
+    .status {
+      font-size: 13px;
+      color: var(--hint);
       text-align: center;
+      min-height: 18px;
     }
-
-    .error {
-      color: #ff453a;
-      text-align: center;
-      font-size: 15px;
-    }
+    .status.error { color: #ff453a; }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>Select Start Position</h1>
-    <p>Seek to the part of the song you want, then tap Confirm.</p>
+    <p>Drag the waveform to navigate.<br>Use the fine slider for sub-second precision.</p>
   </div>
 
-  <div id="loading" class="loading">Loading audio…</div>
-  <div id="error" class="error" style="display:none"></div>
+  <div class="time-big" id="time-big">0:00.0</div>
 
-  <div class="player" id="player" style="display:none">
-    <div class="position-display" id="pos">0:00</div>
-
-    <div class="seek-wrap">
-      <input type="range" id="seek" min="0" max="100" value="0" step="0.01" />
-    </div>
-
-    <div class="times">
-      <span id="cur-time">0:00</span>
-      <span id="dur-time">0:00</span>
-    </div>
-
-    <button class="play-btn" id="play-btn">▶</button>
+  <div class="waveform-wrap" id="wave-wrap">
+    <div class="wave-loading" id="wave-loading">Analyzing audio…</div>
+    <canvas id="waveform" style="display:none"></canvas>
   </div>
+
+  <div class="times">
+    <span id="cur-time">0:00.0</span>
+    <span id="dur-time">0:00</span>
+  </div>
+
+  <!-- Fine-tune precision slider: ±2s around current position -->
+  <div class="fine-wrap">
+    <div class="fine-label">Fine tune (±2s)</div>
+    <input type="range" id="fine-seek" min="-2" max="2" step="0.05" value="0" />
+    <div class="fine-ends">
+      <span id="fine-left">−2s</span>
+      <span id="fine-right">+2s</span>
+    </div>
+  </div>
+
+  <button class="play-btn" id="play-btn" onclick="togglePlay()">▶</button>
+
+  <div class="status" id="status"></div>
+
+  <button class="confirm-btn" onclick="doConfirm()">✓ Confirm this position</button>
 
   <audio id="audio" preload="auto"></audio>
 
@@ -168,98 +222,238 @@
     tg.ready();
     tg.expand();
 
-    const params = new URLSearchParams(location.search);
-    const token = params.get('token');
-    const hintDuration = parseFloat(params.get('duration') || '0');
+    const params  = new URLSearchParams(location.search);
+    const token   = params.get('token');
+    const hintDur = parseFloat(params.get('duration') || '0');
 
-    const audio = document.getElementById('audio');
-    const seek = document.getElementById('seek');
-    const posEl = document.getElementById('pos');
-    const curEl = document.getElementById('cur-time');
-    const durEl = document.getElementById('dur-time');
-    const playBtn = document.getElementById('play-btn');
-    const playerEl = document.getElementById('player');
-    const loadingEl = document.getElementById('loading');
-    const errorEl = document.getElementById('error');
+    const audio    = document.getElementById('audio');
+    const timeBig  = document.getElementById('time-big');
+    const curEl    = document.getElementById('cur-time');
+    const durEl    = document.getElementById('dur-time');
+    const playBtn  = document.getElementById('play-btn');
+    const canvas   = document.getElementById('waveform');
+    const waveLoad = document.getElementById('wave-loading');
+    const statusEl = document.getElementById('status');
+    const fineSeek = document.getElementById('fine-seek');
+    const fineLeft = document.getElementById('fine-left');
+    const fineRight= document.getElementById('fine-right');
+    const wctx     = canvas.getContext('2d');
 
-    function fmt(secs) {
-      const s = Math.floor(secs);
+    let peaks       = null;
+    let duration    = hintDur || 0;
+    let pendingSeek = null;   // iOS seek-while-paused workaround
+    let fineAnchor  = 0;      // base time the fine slider is centered on
+
+    // ── Formatting ────────────────────────────────────────────────────────────
+
+    function fmt(secs, decimals) {
+      const s = Math.max(0, secs);
       const m = Math.floor(s / 60);
-      return `${m}:${String(s % 60).padStart(2, '0')}`;
+      const rem = s % 60;
+      if (decimals) return `${m}:${rem.toFixed(1).padStart(4, '0')}`;
+      return `${m}:${String(Math.floor(rem)).padStart(2, '0')}`;
     }
+
+    function setStatus(msg, isErr) {
+      statusEl.textContent = msg;
+      statusEl.className = 'status' + (isErr ? ' error' : '');
+    }
+
+    // ── UI update ─────────────────────────────────────────────────────────────
 
     function updateUI() {
       const cur = audio.currentTime;
-      const dur = audio.duration || hintDuration || 1;
-      const pct = (cur / dur) * 100;
-      seek.value = cur;
-      seek.style.setProperty('--progress', pct.toFixed(2) + '%');
-      posEl.textContent = fmt(cur);
-      curEl.textContent = fmt(cur);
+      timeBig.textContent = fmt(cur, true);
+      curEl.textContent   = fmt(cur, true);
     }
 
-    function showError(msg) {
-      loadingEl.style.display = 'none';
-      errorEl.style.display = '';
-      errorEl.textContent = msg;
+    // ── Waveform rendering ────────────────────────────────────────────────────
+
+    function renderWaveform() {
+      if (!peaks) return;
+      const dpr = window.devicePixelRatio || 1;
+      const W   = canvas.clientWidth  * dpr;
+      const H   = canvas.clientHeight * dpr;
+      if (canvas.width !== W || canvas.height !== H) {
+        canvas.width  = W;
+        canvas.height = H;
+      }
+
+      const dur      = duration || 1;
+      const progress = audio.currentTime / dur;
+      const playX    = W * progress;
+      const barCount = peaks.length;
+      const barW     = W / barCount;
+      const accent   = getComputedStyle(document.documentElement)
+                         .getPropertyValue('--accent').trim() || '#2ea6ff';
+
+      wctx.clearRect(0, 0, W, H);
+
+      for (let i = 0; i < barCount; i++) {
+        const x    = i * barW;
+        const barH = Math.max(3 * dpr, peaks[i] * H * 0.85);
+        const y    = (H - barH) / 2;
+        const gap  = Math.max(1, barW * 0.2);
+
+        wctx.fillStyle = x + barW <= playX ? accent : '#48484a';
+        wctx.beginPath();
+        if (wctx.roundRect) {
+          wctx.roundRect(x + gap, y, barW - gap * 2, barH, 2);
+        } else {
+          wctx.rect(x + gap, y, barW - gap * 2, barH);
+        }
+        wctx.fill();
+      }
+
+      // Playhead
+      wctx.fillStyle = '#fff';
+      wctx.fillRect(Math.max(0, playX - dpr), 0, dpr * 2, H);
     }
 
-    // Load audio
-    audio.src = `/audio/${token}`;
+    async function analyzeAudio() {
+      try {
+        const resp    = await fetch(`/audio/${token}`);
+        const buf     = await resp.arrayBuffer();
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        const actx    = new AudioCtx();
+        const decoded = await actx.decodeAudioData(buf);
 
+        if (!duration) duration = decoded.duration;
+        durEl.textContent = fmt(duration);
+
+        const raw    = decoded.getChannelData(0);
+        const BARS   = 150;
+        const block  = Math.floor(raw.length / BARS);
+        const rawP   = [];
+        for (let i = 0; i < BARS; i++) {
+          let max = 0;
+          const s = block * i;
+          for (let j = 0; j < block; j++) {
+            const v = Math.abs(raw[s + j]);
+            if (v > max) max = v;
+          }
+          rawP.push(max);
+        }
+        const maxP = Math.max(...rawP) || 1;
+        peaks = rawP.map(p => p / maxP);
+
+        waveLoad.style.display = 'none';
+        canvas.style.display   = 'block';
+        renderWaveform();
+        setStatus('');
+      } catch (e) {
+        waveLoad.textContent = 'Waveform unavailable';
+        console.error('Waveform:', e);
+      }
+    }
+
+    // ── Seeking ───────────────────────────────────────────────────────────────
+
+    function seekTo(time) {
+      const clamped   = Math.max(0, Math.min(time, duration || audio.duration || 0));
+      pendingSeek     = clamped;
+      fineAnchor      = clamped;
+      audio.currentTime = clamped;
+      // Reset fine slider to center
+      fineSeek.value  = 0;
+      updateFineLabels(clamped);
+      updateUI();
+      renderWaveform();
+    }
+
+    function updateFineLabels(anchor) {
+      const dur = duration || audio.duration || 0;
+      fineLeft.textContent  = fmt(Math.max(0, anchor - 2), true);
+      fineRight.textContent = fmt(Math.min(dur, anchor + 2), true);
+    }
+
+    // Fine slider — sub-second precision around current anchor
+    fineSeek.addEventListener('input', () => {
+      const offset  = parseFloat(fineSeek.value);
+      const newTime = Math.max(0, Math.min(fineAnchor + offset, duration || audio.duration || 0));
+      pendingSeek   = newTime;
+      audio.currentTime = newTime;
+      updateUI();
+      renderWaveform();
+    });
+
+    // iOS paused-seek fix
+    audio.addEventListener('play', () => {
+      if (pendingSeek !== null) {
+        const t = pendingSeek;
+        pendingSeek = null;
+        setTimeout(() => { audio.currentTime = t; }, 30);
+      }
+      playBtn.textContent = '⏸';
+    });
+    audio.addEventListener('pause',  () => { playBtn.textContent = '▶'; });
+    audio.addEventListener('ended',  () => { playBtn.textContent = '▶'; });
+    audio.addEventListener('seeked', () => { pendingSeek = null; });
+    audio.addEventListener('timeupdate', () => { updateUI(); renderWaveform(); });
     audio.addEventListener('loadedmetadata', () => {
-      seek.max = audio.duration;
-      durEl.textContent = fmt(audio.duration);
-      loadingEl.style.display = 'none';
-      playerEl.style.display = 'flex';
-      updateUI();
+      if (!duration) duration = audio.duration;
+      durEl.textContent = fmt(duration);
+      updateFineLabels(0);
     });
+    audio.addEventListener('error', () => setStatus('Failed to load audio.', true));
 
-    audio.addEventListener('timeupdate', updateUI);
-
-    audio.addEventListener('ended', () => {
-      playBtn.textContent = '▶';
-    });
-
-    audio.addEventListener('error', () => {
-      showError('Failed to load audio. Please try again.');
-    });
-
-    // Set max from hint while metadata loads (so slider isn't stuck at 100)
-    if (hintDuration > 0) {
-      seek.max = hintDuration;
-      durEl.textContent = fmt(hintDuration);
+    // Waveform touch/mouse seek
+    function seekFromX(clientX) {
+      const rect = canvas.getBoundingClientRect();
+      const pct  = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      seekTo(pct * (duration || audio.duration || 0));
     }
 
-    // Seek slider
-    let isSeeking = false;
-    seek.addEventListener('mousedown', () => { isSeeking = true; });
-    seek.addEventListener('touchstart', () => { isSeeking = true; }, { passive: true });
-    seek.addEventListener('input', () => {
-      audio.currentTime = parseFloat(seek.value);
-      updateUI();
-    });
-    seek.addEventListener('mouseup', () => { isSeeking = false; });
-    seek.addEventListener('touchend', () => { isSeeking = false; });
+    let waving = false;
+    canvas.addEventListener('mousedown', e => { waving = true; seekFromX(e.clientX); });
+    window.addEventListener('mousemove', e => { if (waving) seekFromX(e.clientX); });
+    window.addEventListener('mouseup',   () => { waving = false; });
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault(); waving = true; seekFromX(e.touches[0].clientX);
+    }, { passive: false });
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault(); if (waving) seekFromX(e.touches[0].clientX);
+    }, { passive: false });
+    canvas.addEventListener('touchend', () => { waving = false; });
 
-    // Play/Pause
-    playBtn.addEventListener('click', () => {
+    // ── Playback ──────────────────────────────────────────────────────────────
+
+    function togglePlay() {
       if (audio.paused) {
-        audio.play();
-        playBtn.textContent = '⏸';
+        audio.play().catch(e => setStatus('Playback error: ' + e.message, true));
       } else {
         audio.pause();
-        playBtn.textContent = '▶';
       }
-    });
+    }
 
-    // Telegram MainButton — confirm position
-    tg.MainButton.setText('✓ Confirm this position');
-    tg.MainButton.show();
-    tg.MainButton.onClick(() => {
-      const startSec = Math.floor(audio.currentTime);
-      tg.sendData(JSON.stringify({ start_sec: startSec }));
-    });
+    // ── Confirm ───────────────────────────────────────────────────────────────
+
+    function doConfirm() {
+      audio.pause();
+      // Round to 2 decimal places so FFmpeg gets precise -ss value
+      const startSec = Math.round(audio.currentTime * 100) / 100;
+      const payload  = JSON.stringify({ start_sec: startSec });
+      try {
+        tg.sendData(payload);
+      } catch (e) {
+        setStatus('Could not send — please try again.', true);
+        console.error('sendData:', e);
+      }
+    }
+
+    try {
+      tg.MainButton.setText('✓ Confirm this position');
+      tg.MainButton.show();
+      tg.MainButton.onClick(doConfirm);
+    } catch (e) {
+      console.warn('MainButton:', e);
+    }
+
+    // ── Boot ──────────────────────────────────────────────────────────────────
+
+    audio.src = `/audio/${token}`;
+    if (hintDur > 0) { durEl.textContent = fmt(hintDur); updateFineLabels(0); }
+    analyzeAudio();
   </script>
 </body>
 </html>

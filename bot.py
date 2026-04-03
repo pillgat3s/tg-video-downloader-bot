@@ -385,7 +385,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         data = json.loads(update.message.web_app_data.data)
-        start_sec = int(data["start_sec"])
+        start_sec = round(float(data["start_sec"]), 2)
     except (json.JSONDecodeError, KeyError, ValueError):
         logger.error("Invalid webapp data: %s", update.message.web_app_data.data)
         await update.message.reply_text("Something went wrong. Please try /edit again.")
@@ -396,9 +396,12 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["keyboard_type"] = "volume_only"
     volume = context.user_data.get("mix_volume", 100)
 
-    m, s = divmod(start_sec, 60)
+    total_s = int(start_sec)
+    m, s = divmod(total_s, 60)
+    frac = start_sec - total_s
+    pos_str = f"{m}:{s:02d}.{int(frac * 10)}"
     await update.message.reply_text(
-        f"✅ Start position set to {m}:{s:02d}\n\nAdjust volume then hit Mix & Send:",
+        f"✅ Start position set to {pos_str}\n\nAdjust volume then hit Mix & Send:",
         reply_markup=build_volume_keyboard(volume),
     )
 
