@@ -390,10 +390,10 @@ def _cleanup_session(token: str | None) -> None:
 # Bot handlers
 # ---------------------------------------------------------------------------
 
-async def handle_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_audio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
     if not msg.reply_to_message or not msg.reply_to_message.video:
-        await msg.reply_text("Reply to one of my videos with /edit to add music to it.")
+        await msg.reply_text("Reply to one of my videos with /audio to add music to it.")
         return
     video = msg.reply_to_message.video
     context.user_data["edit_video_file_id"]  = video.file_id
@@ -409,7 +409,7 @@ async def handle_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if context.user_data.get("edit_state") != "waiting_for_audio":
         await update.message.reply_text(
-            "Reply to one of my videos with /edit first, then forward an audio file."
+            "Reply to one of my videos with /audio first, then forward an audio file."
         )
         return
 
@@ -661,7 +661,8 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 if is_youtube_url(url) and "sign in" in err_str.lower():
                     await status_msg.edit_text(
                         "❌ YouTube requires login to download this video.\n\n"
-                        "Use /setcookies to provide your YouTube cookies."
+                        "Use /setcookies to provide your YouTube cookies.\n"
+                        "⚠️ Cookies are session-only and need to be re-set after each bot update."
                     )
                 else:
                     await status_msg.edit_text(
@@ -699,6 +700,117 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
 
 
 # ---------------------------------------------------------------------------
+# Stretch
+# ---------------------------------------------------------------------------
+
+STRETCH_RATIOS = {
+    "9_16":  ("📱 9:16 Portrait",  9,  16),
+    "16_9":  ("🖥 16:9 Landscape", 16,  9),
+    "1_1":   ("⬛ 1:1 Square",      1,  1),
+}
+
+
+def stretch_video(video_path: str, ratio_key: str) -> str:
+    _, w_r, h_r = STRETCH_RATIOS[ratio_key]
+    output_path = video_path.replace(".mp4", f"_stretched_{ratio_key}.mp4")
+    # Force exact ratio while preserving approximate pixel count
+    # new_w * new_h ≈ orig_w * orig_h   and   new_w / new_h = w_r / h_r
+    # → new_w = sqrt(orig_pixels * w_r / h_r), rounded to even
+    result = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", video_path],
+        capture_output=True, text=True, check=True,
+    )
+    orig_w, orig_h = map(int, result.stdout.strip().split(","))
+    orig_pixels = orig_w * orig_h
+    new_w = int((orig_pixels * w_r / h_r) ** 0.5) // 2 * 2
+    new_h = int((orig_pixels * h_r / w_r) ** 0.5) // 2 * 2
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path,
+         "-vf", f"scale={new_w}:{new_h},setsar=1",
+         "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+         "-c:a", "copy", output_path],
+        check=True, capture_output=True,
+    )
+    return output_path
+
+
+def build_stretch_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(label, callback_data=f"stretch:{key}")]
+        for key, (label, _, _) in STRETCH_RATIOS.items()
+    ] + [[InlineKeyboardButton("❌ Cancel", callback_data="stretch:cancel")]])
+
+
+async def handle_stretch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg.reply_to_message or not msg.reply_to_message.video:
+        await msg.reply_text("Reply to one of my videos with /stretch to resize it.")
+        return
+    video = msg.reply_to_message.video
+    context.user_data["stretch_video_file_id"] = video.file_id
+    context.user_data["stretch_video_width"]   = video.width
+    context.user_data["stretch_video_height"]  = video.height
+    context.user_data["stretch_video_duration"] = video.duration
+    await msg.reply_text("↔️ Pick a format to stretch to:", reply_markup=build_stretch_keyboard())
+
+
+async def handle_stretch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    ratio_key = query.data.split(":", 1)[1]
+
+    if ratio_key == "cancel":
+        for key in ("stretch_video_file_id", "stretch_video_width",
+                    "stretch_video_height", "stretch_video_duration"):
+            context.user_data.pop(key, None)
+        await query.edit_message_text("Cancelled.")
+        return
+
+    video_file_id = context.user_data.get("stretch_video_file_id")
+    if not video_file_id:
+        await query.edit_message_text("Session expired. Reply to a video with /stretch.")
+        return
+
+    label, _, _ = STRETCH_RATIOS[ratio_key]
+    await query.edit_message_text(f"⏳ Stretching to {label}…")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_tg   = await context.bot.get_file(video_file_id)
+            video_path = os.path.join(tmpdir, "video.mp4")
+            await video_tg.download_to_drive(video_path)
+            out_path = stretch_video(video_path, ratio_key)
+            size = os.path.getsize(out_path)
+            if size > MAX_SIZE_BYTES:
+                await query.edit_message_text(
+                    f"Stretched video is too large ({size/1024/1024:.1f} MB)."
+                )
+                return
+            await query.edit_message_text("📤 Sending…")
+            with open(out_path, "rb") as f:
+                await context.bot.send_video(
+                    chat_id=query.message.chat_id,
+                    video=f,
+                    supports_streaming=True,
+                    duration=context.user_data.get("stretch_video_duration"),
+                    read_timeout=120,
+                    write_timeout=120,
+                )
+            await query.delete_message()
+    except subprocess.CalledProcessError as e:
+        logger.error("stretch ffmpeg error: %s", e.stderr)
+        await query.edit_message_text("❌ Failed to stretch video.")
+    except Exception:
+        logger.exception("stretch error")
+        await query.edit_message_text("❌ An unexpected error occurred.")
+    finally:
+        for key in ("stretch_video_file_id", "stretch_video_width",
+                    "stretch_video_height", "stretch_video_duration"):
+            context.user_data.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
 # YouTube cookies management
 # ---------------------------------------------------------------------------
 
@@ -710,7 +822,8 @@ SETCOOKIES_TEXT = (
     "2\\. Go to *youtube\\.com* while logged in\n\n"
     "3\\. Click the extension → *Export* → save as `cookies.txt`\n\n"
     "4\\. Send me that file here 👇\n\n"
-    "_Your cookies are stored only for your session and are never shared\\._"
+    "⚠️ _Cookies are stored only for your session and are never shared\\. "
+    "You'll need to re\\-run /setcookies whenever the bot gets updated or restarted\\._"
 )
 
 
@@ -743,7 +856,96 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     context.user_data["yt_cookies"] = content
     context.user_data.pop("waiting_for_yt_cookies", None)
-    await update.message.reply_text("✅ YouTube cookies saved! Try sending a YouTube link now.")
+    await update.message.reply_text(
+        "✅ YouTube cookies saved! Try sending a YouTube link now.\n\n"
+        "⚠️ These are only stored for this session — you'll need to re-run /setcookies "
+        "whenever the bot gets updated or restarted."
+    )
+
+
+# ---------------------------------------------------------------------------
+# /help
+# ---------------------------------------------------------------------------
+
+HELP_TEXT = (
+    "📥 *Video Downloader Bot*\n\n"
+    "*Send a link* from TikTok, Instagram, YouTube, or X/Twitter and I'll download it for you\\.\n\n"
+    "━━━━━━━━━━━━━\n"
+    "*Commands*\n\n"
+    "/audio — Reply to one of my videos to add music to it\n"
+    "/stretch — Reply to one of my videos to resize it \\(9:16, 16:9, 1:1\\)\n"
+    "/setcookies — Provide your YouTube cookies for age\\-restricted or sign\\-in\\-required videos\n"
+    "/settings — View and adjust your preferences\n"
+    "/help — Show this message\n\n"
+    "━━━━━━━━━━━━━\n"
+    "*YouTube downloads*\n\n"
+    "YouTube may require you to be signed in\\. If a download fails, run /setcookies "
+    "and send your cookies\\.txt file \\(exported from your browser\\)\\.\n"
+    "Cookies are stored only for your session and need to be re\\-set after each bot update\\."
+)
+
+
+async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(HELP_TEXT, parse_mode="MarkdownV2",
+                                    disable_web_page_preview=True)
+
+
+# ---------------------------------------------------------------------------
+# /settings
+# ---------------------------------------------------------------------------
+
+def build_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
+    vol = user_data.get("mix_volume", 100)
+    vi  = VOLUME_STEPS.index(vol) if vol in VOLUME_STEPS else len(VOLUME_STEPS) - 1
+    vol_label = "🔇 Replace audio" if vol == 100 else f"🔊 Mix at {vol}%"
+    has_yt = bool(user_data.get("yt_cookies"))
+    rows = [
+        [InlineKeyboardButton("🎚 Default mix volume", callback_data="settings:noop")],
+        [
+            InlineKeyboardButton("◀", callback_data="settings:vol_down"),
+            InlineKeyboardButton(vol_label, callback_data="settings:noop"),
+            InlineKeyboardButton("▶", callback_data="settings:vol_up"),
+        ],
+        [InlineKeyboardButton(
+            "🗑 Clear YouTube cookies" if has_yt else "🍪 No YouTube cookies set",
+            callback_data="settings:clear_yt" if has_yt else "settings:noop",
+        )],
+        [InlineKeyboardButton("✅ Done", callback_data="settings:close")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+async def handle_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "⚙️ *Settings*",
+        parse_mode="Markdown",
+        reply_markup=build_settings_keyboard(context.user_data),
+    )
+
+
+async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    action = query.data.split(":", 1)[1]
+
+    if action == "noop":
+        return
+
+    if action == "close":
+        await query.edit_message_text("⚙️ Settings saved.")
+        return
+
+    vol = context.user_data.get("mix_volume", 100)
+    vi  = VOLUME_STEPS.index(vol) if vol in VOLUME_STEPS else len(VOLUME_STEPS) - 1
+
+    if action == "vol_down":
+        context.user_data["mix_volume"] = VOLUME_STEPS[max(0, vi - 1)]
+    elif action == "vol_up":
+        context.user_data["mix_volume"] = VOLUME_STEPS[min(len(VOLUME_STEPS) - 1, vi + 1)]
+    elif action == "clear_yt":
+        context.user_data.pop("yt_cookies", None)
+
+    await query.edit_message_reply_markup(build_settings_keyboard(context.user_data))
 
 
 # ---------------------------------------------------------------------------
@@ -758,10 +960,15 @@ def main() -> None:
         .post_shutdown(post_shutdown)
         .build()
     )
-    app.add_handler(CommandHandler("edit", handle_edit))
+    app.add_handler(CommandHandler("audio",      handle_audio_cmd))
+    app.add_handler(CommandHandler("stretch",    handle_stretch))
     app.add_handler(CommandHandler("setcookies", handle_set_cookies))
+    app.add_handler(CommandHandler("settings",   handle_settings))
+    app.add_handler(CommandHandler("help",       handle_help))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio))
     app.add_handler(MessageHandler(filters.Document.TXT, handle_document))
+    app.add_handler(CallbackQueryHandler(handle_stretch_callback,  pattern=r"^stretch:"))
+    app.add_handler(CallbackQueryHandler(handle_settings_callback, pattern=r"^settings:"))
     app.add_handler(CallbackQueryHandler(handle_mix_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started. Polling...")
