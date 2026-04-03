@@ -98,6 +98,9 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
     }
     if "tiktok.com" in url:
         opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
+    if is_youtube_url(url):
+        # Use web+web_creator clients for best YouTube/Shorts compatibility
+        opts["extractor_args"] = {"youtube": {"player_client": ["web", "web_creator"]}}
     if is_instagram_url(url) and COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
