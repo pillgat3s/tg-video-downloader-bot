@@ -1045,9 +1045,13 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
     await query.edit_message_reply_markup(build_settings_keyboard(context.user_data))
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Send me a link to download or a video you want to edit."
+    )
+
+
+
 
 def main() -> None:
     app = (
@@ -1057,6 +1061,7 @@ def main() -> None:
         .post_shutdown(post_shutdown)
         .build()
     )
+    app.add_handler(CommandHandler("start",      handle_start))
     app.add_handler(CommandHandler("audio",      handle_audio_cmd))
     app.add_handler(CommandHandler("stretch",    handle_stretch))
     app.add_handler(CommandHandler("setcookies", handle_set_cookies))
