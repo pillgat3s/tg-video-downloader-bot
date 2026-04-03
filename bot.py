@@ -102,21 +102,10 @@ def build_ydl_opts(output_path: str, url: str, yt_cookies_path: str | None = Non
         "no_warnings": False,
     }
     if is_youtube_url(url):
-        # With cookies: web client has full format access
-        # Without cookies: tv_embedded avoids the sign-in wall (but limited formats)
-        has_yt_cookies = bool(yt_cookies_path or YT_COOKIES_FILE.exists())
-        if has_yt_cookies:
-            clients = ["web", "web_creator"]
-        else:
-            clients = ["tv_embedded", "web_creator"]
-        opts["format"] = (
-            "bestvideo[height<=1080]+bestaudio"
-            "/bestvideo[height<=1080]"
-            "/best[height<=1080]"
-            "/bestvideo+bestaudio"
-            "/best"
-        )
-        opts["extractor_args"] = {"youtube": {"player_client": clients}}
+        opts["format"] = "best"
+        opts["extractor_args"] = {
+            "youtube": {"player_client": ["mweb", "android_creator", "tv_embedded", "web_creator"]}
+        }
         if yt_cookies_path:
             opts["cookiefile"] = yt_cookies_path
         elif YT_COOKIES_FILE.exists():
@@ -147,6 +136,17 @@ def reencode_h264(input_path: str) -> str:
 
 def download_video(url: str, output_path: str, yt_cookies_path: str | None = None) -> tuple[str, dict]:
     opts = build_ydl_opts(output_path, url, yt_cookies_path)
+    if is_youtube_url(url):
+        # Log available formats so we can see what YouTube is actually serving
+        probe_opts = {**opts, "quiet": True, "simulate": True, "skip_download": True}
+        try:
+            with yt_dlp.YoutubeDL(probe_opts) as ydl:
+                info_probe = ydl.extract_info(url, download=False)
+                fmts = info_probe.get("formats", [])
+                logger.info("YT available formats for %s: %s", url,
+                            [(f.get("format_id"), f.get("ext"), f.get("height")) for f in fmts])
+        except Exception as probe_err:
+            logger.warning("YT format probe failed: %s", probe_err)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         p = Path(ydl.prepare_filename(info))
