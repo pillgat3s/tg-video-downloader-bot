@@ -164,6 +164,25 @@ def mix_audio_into_video(
     return output_path
 
 
+def extract_audio_preview(audio_path: str, start_sec: int, tmpdir: str) -> str:
+    """Extract a 15-second preview clip from audio starting at start_sec."""
+    preview_path = os.path.join(tmpdir, "preview.mp3")
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-ss", str(start_sec),
+            "-i", audio_path,
+            "-t", "15",
+            "-vn",
+            "-c:a", "libmp3lame", "-q:a", "4",
+            preview_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return preview_path
+
+
 def build_mix_keyboard(volume: int, start: int) -> InlineKeyboardMarkup:
     vi = VOLUME_STEPS.index(volume) if volume in VOLUME_STEPS else VOLUME_STEPS.index(100)
     si = START_STEPS.index(start) if start in START_STEPS else 0
@@ -185,6 +204,9 @@ def build_mix_keyboard(volume: int, start: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"⏮ {sd}s", callback_data=f"start:{sd}"),
             InlineKeyboardButton(f"▶ Start: {start}s", callback_data="noop"),
             InlineKeyboardButton(f"⏭ {su}s", callback_data=f"start:{su}"),
+        ],
+        [
+            InlineKeyboardButton("🎧 Preview 15s", callback_data="preview"),
         ],
         [
             InlineKeyboardButton("🎬 Mix & Send", callback_data="mix"),
@@ -248,6 +270,36 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "edit_video_duration", "edit_video_width", "edit_video_height"):
             context.user_data.pop(key, None)
         await query.edit_message_text("Mix cancelled.")
+        return
+
+    if data == "preview":
+        audio_file_id = context.user_data.get("edit_audio_file_id")
+        start = context.user_data.get("mix_start", 0)
+        if not audio_file_id:
+            await query.answer("No audio file found.", show_alert=True)
+            return
+        await query.answer()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                audio_tg = await context.bot.get_file(audio_file_id)
+                audio_path = os.path.join(tmpdir, "audio")
+                await audio_tg.download_to_drive(audio_path)
+                preview_path = extract_audio_preview(audio_path, start, tmpdir)
+                with open(preview_path, "rb") as f:
+                    await context.bot.send_audio(
+                        chat_id=query.message.chat_id,
+                        audio=f,
+                        title=f"Preview from {start}s",
+                        duration=15,
+                    )
+        except subprocess.CalledProcessError as e:
+            logger.error("Preview ffmpeg error: %s", e.stderr)
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Failed to generate preview.",
+            )
+        except Exception:
+            logger.exception("Unexpected error during preview")
         return
 
     if data.startswith("vol:"):
