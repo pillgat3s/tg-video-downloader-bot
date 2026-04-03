@@ -102,8 +102,8 @@ def build_ydl_opts(output_path: str, url: str, yt_cookies_path: str | None = Non
         "no_warnings": False,
     }
     if is_youtube_url(url):
-        # tv_embedded has limited format availability; permissive string since we re-encode anyway
-        opts["format"] = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+        # tv_embedded only has combined streams (no separate video+audio), use best single stream
+        opts["format"] = "best[height<=1080]/best"
         opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "web_creator"]}}
         if yt_cookies_path:
             opts["cookiefile"] = yt_cookies_path
