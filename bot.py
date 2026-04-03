@@ -689,6 +689,56 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
+
+    if context.user_data.get("waiting_for_stretch_ratio"):
+        context.user_data.pop("waiting_for_stretch_ratio", None)
+        import re as _re
+        m = _re.match(r"^\s*(\d+)\s*[:/]\s*(\d+)\s*$", text)
+        if not m:
+            await update.message.reply_text("Invalid format. Send something like 21:9 or 4:3.")
+            return
+        w_r, h_r = int(m.group(1)), int(m.group(2))
+        if w_r <= 0 or h_r <= 0:
+            await update.message.reply_text("Both numbers must be greater than 0.")
+            return
+        video_file_id = context.user_data.get("stretch_video_file_id")
+        if not video_file_id:
+            await update.message.reply_text("Session expired. Reply to a video with /stretch.")
+            return
+        label = f"{w_r}:{h_r}"
+        status_msg = await update.message.reply_text(f"⏳ Stretching to {label}…")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                video_tg   = await context.bot.get_file(video_file_id)
+                video_path = os.path.join(tmpdir, "video.mp4")
+                await video_tg.download_to_drive(video_path)
+                out_path = stretch_video(video_path, w_r, h_r, label)
+                size = os.path.getsize(out_path)
+                if size > MAX_SIZE_BYTES:
+                    await status_msg.edit_text(f"Stretched video is too large ({size/1024/1024:.1f} MB).")
+                    return
+                await status_msg.edit_text("📤 Sending…")
+                with open(out_path, "rb") as f:
+                    await update.message.reply_video(
+                        video=f,
+                        supports_streaming=True,
+                        duration=context.user_data.get("stretch_video_duration"),
+                        read_timeout=120,
+                        write_timeout=120,
+                    )
+                await status_msg.delete()
+        except subprocess.CalledProcessError as e:
+            logger.error("stretch ffmpeg error: %s", e.stderr)
+            await status_msg.edit_text("❌ Failed to stretch video.")
+        except Exception:
+            logger.exception("custom stretch error")
+            await status_msg.edit_text("❌ An unexpected error occurred.")
+        finally:
+            for key in ("stretch_video_file_id", "stretch_video_width",
+                        "stretch_video_height", "stretch_video_duration"):
+                context.user_data.pop(key, None)
+        return
+
     urls = extract_urls(text)
     if not urls:
         await update.message.reply_text(
@@ -765,12 +815,8 @@ STRETCH_RATIOS = {
 }
 
 
-def stretch_video(video_path: str, ratio_key: str) -> str:
-    _, w_r, h_r = STRETCH_RATIOS[ratio_key]
-    output_path = video_path.replace(".mp4", f"_stretched_{ratio_key}.mp4")
-    # Force exact ratio while preserving approximate pixel count
-    # new_w * new_h ≈ orig_w * orig_h   and   new_w / new_h = w_r / h_r
-    # → new_w = sqrt(orig_pixels * w_r / h_r), rounded to even
+def stretch_video(video_path: str, w_r: int, h_r: int, label: str) -> str:
+    output_path = video_path.replace(".mp4", f"_stretched.mp4")
     result = subprocess.run(
         ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
          "-show_entries", "stream=width,height",
@@ -795,7 +841,10 @@ def build_stretch_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(label, callback_data=f"stretch:{key}")]
         for key, (label, _, _) in STRETCH_RATIOS.items()
-    ] + [[InlineKeyboardButton("❌ Cancel", callback_data="stretch:cancel")]])
+    ] + [
+        [InlineKeyboardButton("✏️ Custom ratio", callback_data="stretch:custom")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="stretch:cancel")],
+    ])
 
 
 async def handle_stretch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -823,19 +872,24 @@ async def handle_stretch_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("Cancelled.")
         return
 
+    if ratio_key == "custom":
+        context.user_data["waiting_for_stretch_ratio"] = True
+        await query.edit_message_text("Send your ratio (e.g. 21:9 or 4:3):")
+        return
+
     video_file_id = context.user_data.get("stretch_video_file_id")
     if not video_file_id:
         await query.edit_message_text("Session expired. Reply to a video with /stretch.")
         return
 
-    label, _, _ = STRETCH_RATIOS[ratio_key]
+    label, w_r, h_r = STRETCH_RATIOS[ratio_key]
     await query.edit_message_text(f"⏳ Stretching to {label}…")
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             video_tg   = await context.bot.get_file(video_file_id)
             video_path = os.path.join(tmpdir, "video.mp4")
             await video_tg.download_to_drive(video_path)
-            out_path = stretch_video(video_path, ratio_key)
+            out_path = stretch_video(video_path, w_r, h_r, label)
             size = os.path.getsize(out_path)
             if size > MAX_SIZE_BYTES:
                 await query.edit_message_text(
