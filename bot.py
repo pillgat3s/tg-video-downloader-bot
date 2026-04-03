@@ -2,6 +2,7 @@ import os
 import re
 import base64
 import logging
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -72,6 +73,23 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
     return opts
 
 
+def reencode_h264(input_path: str) -> str:
+    """Re-encode to h264/aac mp4. Returns path to new file."""
+    output_path = input_path.replace(".mp4", "_h264.mp4")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", input_path,
+            "-vcodec", "libx264", "-crf", "23", "-preset", "fast",
+            "-acodec", "aac",
+            "-movflags", "+faststart",
+            output_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return output_path
+
+
 def download_video(url: str, output_path: str) -> tuple[str, dict]:
     opts = build_ydl_opts(output_path, url)
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -79,6 +97,12 @@ def download_video(url: str, output_path: str) -> tuple[str, dict]:
         p = Path(ydl.prepare_filename(info))
         if not p.exists():
             p = p.with_suffix(".mp4")
+
+        # Re-encode Instagram videos to h264 — Instagram serves HEVC/h265
+        # which Telegram and QuickTime can't play inline.
+        if "instagram.com" in url or "instagr.am" in url:
+            p = Path(reencode_h264(str(p)))
+
         return str(p), info
 
 
