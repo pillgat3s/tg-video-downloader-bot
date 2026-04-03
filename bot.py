@@ -15,6 +15,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+IG_USERNAME = os.environ.get("INSTAGRAM_USERNAME")
+IG_PASSWORD = os.environ.get("INSTAGRAM_PASSWORD")
 MAX_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 COOKIES_FILE = Path("cookies.txt")
 
@@ -41,10 +43,17 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
         "no_warnings": True,
     }
 
-    if "tiktok.com" in url or "tiktok" in url:
+    is_instagram = "instagram.com" in url or "instagr.am" in url
+    is_tiktok = "tiktok.com" in url
+
+    if is_tiktok:
         opts["extractor_args"] = {
             "tiktok": {"download_without_watermark": True}
         }
+
+    if is_instagram and IG_USERNAME and IG_PASSWORD:
+        opts["username"] = IG_USERNAME
+        opts["password"] = IG_PASSWORD
 
     if COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
