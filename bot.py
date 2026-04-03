@@ -49,7 +49,13 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
 
     opts = {
         "outtmpl": output_path,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+        # Prefer h264 (avc) — Telegram can't play h265/HEVC inline.
+        # Falls back to any mp4, then anything if needed.
+        "format": (
+            "bestvideo[vcodec^=avc][ext=mp4]+bestaudio[ext=m4a]"
+            "/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+            "/bestvideo+bestaudio/best"
+        ),
         "merge_output_format": "mp4",
         "quiet": False,
         "no_warnings": False,
@@ -66,14 +72,14 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
     return opts
 
 
-def download_video(url: str, output_path: str) -> str:
+def download_video(url: str, output_path: str) -> tuple[str, dict]:
     opts = build_ydl_opts(output_path, url)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         p = Path(ydl.prepare_filename(info))
         if not p.exists():
             p = p.with_suffix(".mp4")
-        return str(p)
+        return str(p), info
 
 
 def is_instagram_url(url: str) -> bool:
@@ -101,7 +107,7 @@ async def process_url(update: Update, url: str) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "video.%(ext)s")
             try:
-                video_path = download_video(url, output_template)
+                video_path, info = download_video(url, output_template)
             except yt_dlp.utils.UnsupportedError:
                 await status_msg.edit_text("Unsupported URL or platform.")
                 return
@@ -125,6 +131,9 @@ async def process_url(update: Update, url: str) -> None:
                 await update.message.reply_video(
                     video=f,
                     supports_streaming=True,
+                    width=info.get("width"),
+                    height=info.get("height"),
+                    duration=int(info.get("duration") or 0) or None,
                     read_timeout=120,
                     write_timeout=120,
                 )
