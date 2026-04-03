@@ -356,6 +356,15 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
 async def post_init(application: Application) -> None:
     global _web_runner, _bot_app
     _bot_app = application
+
+    await application.bot.set_my_commands([
+        ("audio",      "Add music to a video — reply to a video"),
+        ("stretch",    "Resize a video — reply to a video"),
+        ("setcookies", "Set your YouTube cookies for restricted videos"),
+        ("settings",   "View and adjust your preferences"),
+        ("help",       "Show all commands and info"),
+    ])
+
     if not MINI_APP_HOST:
         logger.info("RAILWAY_PUBLIC_DOMAIN not set — Mini App disabled")
         return
