@@ -7,16 +7,14 @@
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --accent:      var(--tg-theme-button-color, #2ea6ff);
-      --accent-t:    var(--tg-theme-button-text-color, #fff);
-      --bg:          var(--tg-theme-bg-color, #1c1c1e);
-      --text:        var(--tg-theme-text-color, #ffffff);
-      --hint:        var(--tg-theme-hint-color, #8e8e93);
-      --secondary-bg:var(--tg-theme-secondary-bg-color, #2c2c2e);
+      --accent:  var(--tg-theme-button-color, #2ea6ff);
+      --accent-t:var(--tg-theme-button-text-color, #fff);
+      --bg:      var(--tg-theme-bg-color, #1c1c1e);
+      --text:    var(--tg-theme-text-color, #ffffff);
+      --hint:    var(--tg-theme-hint-color, #8e8e93);
+      --sec-bg:  var(--tg-theme-secondary-bg-color, #2c2c2e);
     }
-
     body {
       background: var(--bg);
       color: var(--text);
@@ -25,159 +23,77 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 28px 20px 130px;
+      padding: 28px 20px 32px;
       gap: 24px;
       -webkit-tap-highlight-color: transparent;
     }
-
     .header { text-align: center; }
     .header h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
     .header p  { font-size: 14px; color: var(--hint); line-height: 1.4; }
 
-    /* Big time display */
     .time-big {
-      font-size: 54px;
-      font-weight: 800;
+      font-size: 54px; font-weight: 800;
       font-variant-numeric: tabular-nums;
-      letter-spacing: -2px;
-      line-height: 1;
+      letter-spacing: -2px; line-height: 1;
     }
 
-    /* Waveform */
     .waveform-wrap {
-      width: 100%;
-      max-width: 420px;
-      position: relative;
-      cursor: pointer;
-      user-select: none;
-      -webkit-user-select: none;
+      width: 100%; max-width: 420px;
+      user-select: none; -webkit-user-select: none;
     }
-    canvas#waveform {
-      width: 100%;
-      height: 80px;
-      display: block;
-      border-radius: 8px;
-      touch-action: none;
-    }
+    canvas#waveform { width: 100%; height: 80px; display: block; border-radius: 8px; touch-action: none; }
     .wave-loading {
-      height: 80px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--hint);
-      font-size: 13px;
-      background: var(--secondary-bg);
-      border-radius: 8px;
+      height: 80px; display: flex; align-items: center; justify-content: center;
+      color: var(--hint); font-size: 13px; background: var(--sec-bg); border-radius: 8px;
     }
 
-    /* Time labels under waveform */
     .times {
-      display: flex;
-      justify-content: space-between;
-      font-size: 12px;
-      color: var(--hint);
-      font-variant-numeric: tabular-nums;
-      width: 100%;
-      max-width: 420px;
-      margin-top: -16px;
+      display: flex; justify-content: space-between;
+      font-size: 12px; color: var(--hint); font-variant-numeric: tabular-nums;
+      width: 100%; max-width: 420px; margin-top: -16px;
     }
 
-    /* Fine-tune precision slider */
-    .fine-wrap {
-      width: 100%;
-      max-width: 420px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .fine-label {
-      text-align: center;
-      font-size: 12px;
-      color: var(--hint);
-    }
+    .fine-wrap { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 6px; }
+    .fine-label { text-align: center; font-size: 12px; color: var(--hint); }
     input[type="range"]#fine-seek {
-      -webkit-appearance: none;
-      appearance: none;
-      width: 100%;
-      height: 6px;
-      border-radius: 3px;
-      outline: none;
-      cursor: pointer;
-      background: linear-gradient(
-        to right,
-        var(--secondary-bg) 0%,
-        var(--secondary-bg) calc(50% - 1px),
-        var(--accent) calc(50% - 1px),
-        var(--accent) calc(50% + 1px),
-        var(--secondary-bg) calc(50% + 1px),
-        var(--secondary-bg) 100%
-      );
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 6px; border-radius: 3px; outline: none; cursor: pointer;
+      background: linear-gradient(to right,
+        var(--sec-bg) 0%, var(--sec-bg) calc(50% - 1px),
+        var(--accent) calc(50% - 1px), var(--accent) calc(50% + 1px),
+        var(--sec-bg) calc(50% + 1px), var(--sec-bg) 100%);
     }
     input[type="range"]#fine-seek::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      background: var(--accent);
-      cursor: pointer;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+      -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%;
+      background: var(--accent); cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.35);
     }
     input[type="range"]#fine-seek::-moz-range-thumb {
-      width: 24px;
-      height: 24px;
-      border-radius: 50%;
-      background: var(--accent);
-      cursor: pointer;
-      border: none;
+      width: 24px; height: 24px; border-radius: 50%;
+      background: var(--accent); cursor: pointer; border: none;
     }
     .fine-ends {
-      display: flex;
-      justify-content: space-between;
-      font-size: 11px;
-      color: var(--hint);
-      font-variant-numeric: tabular-nums;
+      display: flex; justify-content: space-between;
+      font-size: 11px; color: var(--hint); font-variant-numeric: tabular-nums;
     }
 
-    /* Play / Pause */
     .play-btn {
-      width: 64px;
-      height: 64px;
-      border-radius: 50%;
-      border: none;
-      background: var(--accent);
-      color: var(--accent-t);
-      font-size: 22px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: opacity 0.15s;
+      width: 64px; height: 64px; border-radius: 50%; border: none;
+      background: var(--accent); color: var(--accent-t);
+      font-size: 22px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: opacity .15s;
     }
-    .play-btn:active { opacity: 0.7; }
+    .play-btn:active { opacity: .7; }
 
-    /* Confirm button (always visible, MainButton is additional) */
     .confirm-btn {
-      width: 100%;
-      max-width: 420px;
-      padding: 16px;
-      border: none;
-      border-radius: 14px;
-      background: var(--accent);
-      color: var(--accent-t);
-      font-size: 17px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: opacity 0.15s;
+      width: 100%; max-width: 420px; padding: 16px; border: none;
+      border-radius: 14px; background: var(--accent); color: var(--accent-t);
+      font-size: 17px; font-weight: 700; cursor: pointer; transition: opacity .15s;
     }
-    .confirm-btn:active { opacity: 0.75; }
+    .confirm-btn:active { opacity: .75; }
+    .confirm-btn:disabled { opacity: .5; cursor: default; }
 
-    .status {
-      font-size: 13px;
-      color: var(--hint);
-      text-align: center;
-      min-height: 18px;
-    }
+    .status { font-size: 13px; color: var(--hint); text-align: center; min-height: 18px; }
     .status.error { color: #ff453a; }
   </style>
 </head>
@@ -189,7 +105,7 @@
 
   <div class="time-big" id="time-big">0:00.0</div>
 
-  <div class="waveform-wrap" id="wave-wrap">
+  <div class="waveform-wrap">
     <div class="wave-loading" id="wave-loading">Analyzing audio…</div>
     <canvas id="waveform" style="display:none"></canvas>
   </div>
@@ -199,7 +115,6 @@
     <span id="dur-time">0:00</span>
   </div>
 
-  <!-- Fine-tune precision slider: ±2s around current position -->
   <div class="fine-wrap">
     <div class="fine-label">Fine tune (±2s)</div>
     <input type="range" id="fine-seek" min="-2" max="2" step="0.05" value="0" />
@@ -213,135 +128,98 @@
 
   <div class="status" id="status"></div>
 
-  <button class="confirm-btn" onclick="doConfirm()">✓ Confirm this position</button>
+  <button class="confirm-btn" id="confirm-btn" onclick="doConfirm()">✓ Confirm this position</button>
 
   <audio id="audio" preload="auto"></audio>
 
   <script>
-    const tg = window.Telegram.WebApp;
+    const tg       = window.Telegram.WebApp;
     tg.ready();
     tg.expand();
 
-    const params  = new URLSearchParams(location.search);
-    const token   = params.get('token');
-    const hintDur = parseFloat(params.get('duration') || '0');
+    const params     = new URLSearchParams(location.search);
+    const token      = params.get('token');
+    const hintDur    = parseFloat(params.get('duration') || '0');
+    const chatId     = params.get('chat_id');
+    const userId     = params.get('user_id');
+    const messageId  = params.get('message_id');
 
-    const audio    = document.getElementById('audio');
-    const timeBig  = document.getElementById('time-big');
-    const curEl    = document.getElementById('cur-time');
-    const durEl    = document.getElementById('dur-time');
-    const playBtn  = document.getElementById('play-btn');
-    const canvas   = document.getElementById('waveform');
-    const waveLoad = document.getElementById('wave-loading');
-    const statusEl = document.getElementById('status');
-    const fineSeek = document.getElementById('fine-seek');
-    const fineLeft = document.getElementById('fine-left');
-    const fineRight= document.getElementById('fine-right');
-    const wctx     = canvas.getContext('2d');
+    const audio      = document.getElementById('audio');
+    const timeBig    = document.getElementById('time-big');
+    const curEl      = document.getElementById('cur-time');
+    const durEl      = document.getElementById('dur-time');
+    const playBtn    = document.getElementById('play-btn');
+    const canvas     = document.getElementById('waveform');
+    const waveLoad   = document.getElementById('wave-loading');
+    const statusEl   = document.getElementById('status');
+    const fineSeek   = document.getElementById('fine-seek');
+    const fineLeft   = document.getElementById('fine-left');
+    const fineRight  = document.getElementById('fine-right');
+    const confirmBtn = document.getElementById('confirm-btn');
+    const wctx       = canvas.getContext('2d');
 
     let peaks       = null;
     let duration    = hintDur || 0;
-    let pendingSeek = null;   // iOS seek-while-paused workaround
-    let fineAnchor  = 0;      // base time the fine slider is centered on
+    let pendingSeek = null;
+    let fineAnchor  = 0;
 
-    // ── Formatting ────────────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
-    function fmt(secs, decimals) {
-      const s = Math.max(0, secs);
-      const m = Math.floor(s / 60);
-      const rem = s % 60;
-      if (decimals) return `${m}:${rem.toFixed(1).padStart(4, '0')}`;
-      return `${m}:${String(Math.floor(rem)).padStart(2, '0')}`;
+    function fmt(secs, dec) {
+      const s = Math.max(0, secs), m = Math.floor(s / 60), r = s % 60;
+      return dec ? `${m}:${r.toFixed(1).padStart(4,'0')}` : `${m}:${String(Math.floor(r)).padStart(2,'0')}`;
     }
-
-    function setStatus(msg, isErr) {
+    function setStatus(msg, err) {
       statusEl.textContent = msg;
-      statusEl.className = 'status' + (isErr ? ' error' : '');
+      statusEl.className = 'status' + (err ? ' error' : '');
     }
-
-    // ── UI update ─────────────────────────────────────────────────────────────
-
     function updateUI() {
-      const cur = audio.currentTime;
-      timeBig.textContent = fmt(cur, true);
-      curEl.textContent   = fmt(cur, true);
+      const c = audio.currentTime;
+      timeBig.textContent = fmt(c, true);
+      curEl.textContent   = fmt(c, true);
     }
 
-    // ── Waveform rendering ────────────────────────────────────────────────────
+    // ── Waveform ─────────────────────────────────────────────────────────────
 
     function renderWaveform() {
       if (!peaks) return;
       const dpr = window.devicePixelRatio || 1;
-      const W   = canvas.clientWidth  * dpr;
-      const H   = canvas.clientHeight * dpr;
-      if (canvas.width !== W || canvas.height !== H) {
-        canvas.width  = W;
-        canvas.height = H;
-      }
-
-      const dur      = duration || 1;
-      const progress = audio.currentTime / dur;
-      const playX    = W * progress;
-      const barCount = peaks.length;
-      const barW     = W / barCount;
-      const accent   = getComputedStyle(document.documentElement)
-                         .getPropertyValue('--accent').trim() || '#2ea6ff';
-
+      const W = canvas.clientWidth * dpr, H = canvas.clientHeight * dpr;
+      if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+      const dur = duration || 1, playX = (audio.currentTime / dur) * W;
+      const barW = W / peaks.length;
+      const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#2ea6ff';
       wctx.clearRect(0, 0, W, H);
-
-      for (let i = 0; i < barCount; i++) {
-        const x    = i * barW;
-        const barH = Math.max(3 * dpr, peaks[i] * H * 0.85);
-        const y    = (H - barH) / 2;
-        const gap  = Math.max(1, barW * 0.2);
-
+      peaks.forEach((p, i) => {
+        const x = i * barW, barH = Math.max(3 * dpr, p * H * .85), y = (H - barH) / 2, gap = Math.max(1, barW * .2);
         wctx.fillStyle = x + barW <= playX ? accent : '#48484a';
         wctx.beginPath();
-        if (wctx.roundRect) {
-          wctx.roundRect(x + gap, y, barW - gap * 2, barH, 2);
-        } else {
-          wctx.rect(x + gap, y, barW - gap * 2, barH);
-        }
+        wctx.roundRect ? wctx.roundRect(x+gap, y, barW-gap*2, barH, 2) : wctx.rect(x+gap, y, barW-gap*2, barH);
         wctx.fill();
-      }
-
-      // Playhead
+      });
       wctx.fillStyle = '#fff';
       wctx.fillRect(Math.max(0, playX - dpr), 0, dpr * 2, H);
     }
 
     async function analyzeAudio() {
       try {
-        const resp    = await fetch(`/audio/${token}`);
-        const buf     = await resp.arrayBuffer();
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        const actx    = new AudioCtx();
+        const buf     = await (await fetch(`/audio/${token}`)).arrayBuffer();
+        const actx    = new (window.AudioContext || window.webkitAudioContext)();
         const decoded = await actx.decodeAudioData(buf);
-
         if (!duration) duration = decoded.duration;
         durEl.textContent = fmt(duration);
-
-        const raw    = decoded.getChannelData(0);
-        const BARS   = 150;
-        const block  = Math.floor(raw.length / BARS);
-        const rawP   = [];
-        for (let i = 0; i < BARS; i++) {
-          let max = 0;
-          const s = block * i;
-          for (let j = 0; j < block; j++) {
-            const v = Math.abs(raw[s + j]);
-            if (v > max) max = v;
-          }
-          rawP.push(max);
-        }
+        const raw = decoded.getChannelData(0), BARS = 150, block = Math.floor(raw.length / BARS);
+        const rawP = Array.from({length: BARS}, (_, i) => {
+          let max = 0, s = block * i;
+          for (let j = 0; j < block; j++) { const v = Math.abs(raw[s+j]); if (v > max) max = v; }
+          return max;
+        });
         const maxP = Math.max(...rawP) || 1;
         peaks = rawP.map(p => p / maxP);
-
         waveLoad.style.display = 'none';
         canvas.style.display   = 'block';
         renderWaveform();
-        setStatus('');
-      } catch (e) {
+      } catch(e) {
         waveLoad.textContent = 'Waveform unavailable';
         console.error('Waveform:', e);
       }
@@ -350,109 +228,81 @@
     // ── Seeking ───────────────────────────────────────────────────────────────
 
     function seekTo(time) {
-      const clamped   = Math.max(0, Math.min(time, duration || audio.duration || 0));
-      pendingSeek     = clamped;
-      fineAnchor      = clamped;
-      audio.currentTime = clamped;
-      // Reset fine slider to center
-      fineSeek.value  = 0;
-      updateFineLabels(clamped);
-      updateUI();
-      renderWaveform();
+      const c = Math.max(0, Math.min(time, duration || audio.duration || 0));
+      pendingSeek = c; fineAnchor = c;
+      audio.currentTime = c;
+      fineSeek.value = 0;
+      fineLeft.textContent  = fmt(Math.max(0, c - 2), true);
+      fineRight.textContent = fmt(Math.min(duration || 9999, c + 2), true);
+      updateUI(); renderWaveform();
     }
 
-    function updateFineLabels(anchor) {
-      const dur = duration || audio.duration || 0;
-      fineLeft.textContent  = fmt(Math.max(0, anchor - 2), true);
-      fineRight.textContent = fmt(Math.min(dur, anchor + 2), true);
-    }
-
-    // Fine slider — sub-second precision around current anchor
     fineSeek.addEventListener('input', () => {
-      const offset  = parseFloat(fineSeek.value);
-      const newTime = Math.max(0, Math.min(fineAnchor + offset, duration || audio.duration || 0));
-      pendingSeek   = newTime;
-      audio.currentTime = newTime;
-      updateUI();
-      renderWaveform();
+      const t = Math.max(0, Math.min(fineAnchor + parseFloat(fineSeek.value), duration || audio.duration || 0));
+      pendingSeek = t; audio.currentTime = t; updateUI(); renderWaveform();
     });
 
     // iOS paused-seek fix
-    audio.addEventListener('play', () => {
-      if (pendingSeek !== null) {
-        const t = pendingSeek;
-        pendingSeek = null;
-        setTimeout(() => { audio.currentTime = t; }, 30);
-      }
-      playBtn.textContent = '⏸';
-    });
-    audio.addEventListener('pause',  () => { playBtn.textContent = '▶'; });
-    audio.addEventListener('ended',  () => { playBtn.textContent = '▶'; });
-    audio.addEventListener('seeked', () => { pendingSeek = null; });
+    audio.addEventListener('play',  () => { if (pendingSeek !== null) { const t=pendingSeek; pendingSeek=null; setTimeout(()=>{audio.currentTime=t;},30); } playBtn.textContent='⏸'; });
+    audio.addEventListener('pause', () => { playBtn.textContent = '▶'; });
+    audio.addEventListener('ended', () => { playBtn.textContent = '▶'; });
+    audio.addEventListener('seeked',() => { pendingSeek = null; });
     audio.addEventListener('timeupdate', () => { updateUI(); renderWaveform(); });
-    audio.addEventListener('loadedmetadata', () => {
-      if (!duration) duration = audio.duration;
-      durEl.textContent = fmt(duration);
-      updateFineLabels(0);
-    });
+    audio.addEventListener('loadedmetadata', () => { if (!duration) duration = audio.duration; durEl.textContent = fmt(duration); });
     audio.addEventListener('error', () => setStatus('Failed to load audio.', true));
 
-    // Waveform touch/mouse seek
-    function seekFromX(clientX) {
-      const rect = canvas.getBoundingClientRect();
-      const pct  = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      seekTo(pct * (duration || audio.duration || 0));
+    // Waveform seek via touch/mouse
+    function seekFromX(cx) {
+      const r = canvas.getBoundingClientRect();
+      seekTo(Math.max(0, Math.min(1, (cx - r.left) / r.width)) * (duration || audio.duration || 0));
     }
-
     let waving = false;
-    canvas.addEventListener('mousedown', e => { waving = true; seekFromX(e.clientX); });
-    window.addEventListener('mousemove', e => { if (waving) seekFromX(e.clientX); });
-    window.addEventListener('mouseup',   () => { waving = false; });
-    canvas.addEventListener('touchstart', e => {
-      e.preventDefault(); waving = true; seekFromX(e.touches[0].clientX);
-    }, { passive: false });
-    canvas.addEventListener('touchmove', e => {
-      e.preventDefault(); if (waving) seekFromX(e.touches[0].clientX);
-    }, { passive: false });
-    canvas.addEventListener('touchend', () => { waving = false; });
-
-    // ── Playback ──────────────────────────────────────────────────────────────
+    canvas.addEventListener('mousedown', e => { waving=true; seekFromX(e.clientX); });
+    window.addEventListener('mousemove', e => { if(waving) seekFromX(e.clientX); });
+    window.addEventListener('mouseup',   () => { waving=false; });
+    canvas.addEventListener('touchstart', e => { e.preventDefault(); waving=true; seekFromX(e.touches[0].clientX); }, {passive:false});
+    canvas.addEventListener('touchmove',  e => { e.preventDefault(); if(waving) seekFromX(e.touches[0].clientX); }, {passive:false});
+    canvas.addEventListener('touchend',   () => { waving=false; });
 
     function togglePlay() {
-      if (audio.paused) {
-        audio.play().catch(e => setStatus('Playback error: ' + e.message, true));
-      } else {
-        audio.pause();
-      }
+      audio.paused ? audio.play().catch(e=>setStatus('Playback error: '+e.message,true)) : audio.pause();
     }
 
-    // ── Confirm ───────────────────────────────────────────────────────────────
+    // ── Confirm — POST to bot server, then close ──────────────────────────────
 
-    function doConfirm() {
+    async function doConfirm() {
       audio.pause();
-      // Round to 2 decimal places so FFmpeg gets precise -ss value
-      const startSec = Math.round(audio.currentTime * 100) / 100;
-      const payload  = JSON.stringify({ start_sec: startSec });
-      try {
-        tg.sendData(payload);
-      } catch (e) {
-        setStatus('Could not send — please try again.', true);
-        console.error('sendData:', e);
-      }
-    }
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = 'Sending…';
 
-    try {
-      tg.MainButton.setText('✓ Confirm this position');
-      tg.MainButton.show();
-      tg.MainButton.onClick(doConfirm);
-    } catch (e) {
-      console.warn('MainButton:', e);
+      const startSec = Math.round(audio.currentTime * 100) / 100;
+
+      try {
+        const res = await fetch('/set-position', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            token,
+            chat_id:    chatId,
+            user_id:    userId,
+            message_id: messageId,
+            start_sec:  startSec,
+          }),
+        });
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        tg.close();
+      } catch(e) {
+        setStatus('Failed to confirm — try again.', true);
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = '✓ Confirm this position';
+        console.error('Confirm error:', e);
+      }
     }
 
     // ── Boot ──────────────────────────────────────────────────────────────────
 
     audio.src = `/audio/${token}`;
-    if (hintDur > 0) { durEl.textContent = fmt(hintDur); updateFineLabels(0); }
+    if (hintDur > 0) { durEl.textContent = fmt(hintDur); fineLeft.textContent = '−2s'; fineRight.textContent = '+2s'; }
     analyzeAudio();
   </script>
 </body>

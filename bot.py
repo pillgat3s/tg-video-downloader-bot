@@ -30,10 +30,8 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 MAX_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 
-# Mini App web server — only available when RAILWAY_PUBLIC_DOMAIN is set.
 MINI_APP_HOST = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
 
-# Cookies file written from INSTAGRAM_COOKIES env var (base64-encoded cookies.txt).
 COOKIES_FILE = Path("cookies.txt")
 _COOKIES_B64 = os.environ.get("INSTAGRAM_COOKIES", "").strip()
 if _COOKIES_B64 and not COOKIES_FILE.exists():
@@ -52,10 +50,12 @@ URL_PATTERN = re.compile(
 )
 
 VOLUME_STEPS = [10, 25, 50, 75, 100]  # 100 = replace original audio; <100 = mix on top
+START_STEPS  = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240]
 
 # token -> {path: str, tmpdir: TemporaryDirectory, duration: float}
 _audio_sessions: dict[str, dict] = {}
 _web_runner: aio_web.AppRunner | None = None
+_bot_app: Application | None = None  # set in post_init, used by web endpoints
 
 
 # ---------------------------------------------------------------------------
@@ -71,9 +71,6 @@ def is_instagram_url(url: str) -> bool:
 
 
 def build_ydl_opts(output_path: str, url: str) -> dict:
-    is_instagram = is_instagram_url(url)
-    is_tiktok = "tiktok.com" in url
-
     opts = {
         "outtmpl": output_path,
         "format": (
@@ -85,9 +82,9 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
         "quiet": False,
         "no_warnings": False,
     }
-    if is_tiktok:
+    if "tiktok.com" in url:
         opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
-    if is_instagram and COOKIES_FILE.exists():
+    if is_instagram_url(url) and COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
 
@@ -95,12 +92,9 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
 def reencode_h264(input_path: str) -> str:
     output_path = input_path.replace(".mp4", "_h264.mp4")
     subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", input_path,
-            "-vcodec", "libx264", "-crf", "23", "-preset", "fast",
-            "-acodec", "aac", "-movflags", "+faststart",
-            output_path,
-        ],
+        ["ffmpeg", "-y", "-i", input_path,
+         "-vcodec", "libx264", "-crf", "23", "-preset", "fast",
+         "-acodec", "aac", "-movflags", "+faststart", output_path],
         check=True, capture_output=True,
     )
     return output_path
@@ -124,102 +118,94 @@ def download_video(url: str, output_path: str) -> tuple[str, dict]:
 
 def get_audio_duration(path: str) -> float:
     try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "quiet",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                path,
-            ],
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
             capture_output=True, text=True, check=True,
         )
-        return float(result.stdout.strip())
+        return float(r.stdout.strip())
     except Exception:
         return 0.0
 
 
-def mix_audio_into_video(video_path: str, audio_path: str, volume: int, start_sec: int) -> str:
-    """Mix audio into video.
-    volume=100 replaces the original audio; volume<100 mixes on top at that level.
-    """
+def mix_audio_into_video(video_path: str, audio_path: str, volume: int, start_sec: float) -> str:
     output_path = video_path.replace(".mp4", "_mixed.mp4")
     vol = volume / 100.0
-
     if volume == 100:
         cmd = [
-            "ffmpeg", "-y",
-            "-i", video_path,
+            "ffmpeg", "-y", "-i", video_path,
             "-ss", str(start_sec), "-i", audio_path,
             "-map", "0:v", "-map", "1:a",
-            "-shortest", "-c:v", "copy", "-c:a", "aac",
-            output_path,
+            "-shortest", "-c:v", "copy", "-c:a", "aac", output_path,
         ]
     else:
         cmd = [
-            "ffmpeg", "-y",
-            "-i", video_path,
+            "ffmpeg", "-y", "-i", video_path,
             "-ss", str(start_sec), "-i", audio_path,
             "-filter_complex",
             f"[0:a]volume=1[oa];[1:a]volume={vol}[na];[oa][na]amix=inputs=2:duration=first[aout]",
             "-map", "0:v", "-map", "[aout]",
-            "-shortest", "-c:v", "copy", "-c:a", "aac",
-            output_path,
+            "-shortest", "-c:v", "copy", "-c:a", "aac", output_path,
         ]
-
     subprocess.run(cmd, check=True, capture_output=True)
     return output_path
 
 
-def extract_audio_preview(audio_path: str, start_sec: int, tmpdir: str) -> str:
-    preview_path = os.path.join(tmpdir, f"preview_{start_sec}.mp3")
+def extract_audio_preview(audio_path: str, start_sec: float, tmpdir: str) -> str:
+    preview_path = os.path.join(tmpdir, "preview.mp3")
     subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-ss", str(start_sec), "-i", audio_path,
-            "-t", "15", "-vn",
-            "-c:a", "libmp3lame", "-q:a", "4",
-            preview_path,
-        ],
+        ["ffmpeg", "-y", "-ss", str(start_sec), "-i", audio_path,
+         "-t", "15", "-vn", "-c:a", "libmp3lame", "-q:a", "4", preview_path],
         check=True, capture_output=True,
     )
     return preview_path
 
 
 # ---------------------------------------------------------------------------
-# Keyboards
+# Start-position helpers
 # ---------------------------------------------------------------------------
 
-def build_volume_keyboard(volume: int, start_sec: int | None = None) -> InlineKeyboardMarkup:
-    """Volume-only keyboard shown after position is set via Mini App."""
+def prev_step(start: float) -> int:
+    for s in reversed(START_STEPS):
+        if s < start - 0.5:
+            return s
+    return 0
+
+
+def next_step(start: float) -> int:
+    for s in START_STEPS:
+        if s > start + 0.5:
+            return s
+    return START_STEPS[-1]
+
+
+def fmt_start(start: float) -> str:
+    total = int(start)
+    m, s = divmod(total, 60)
+    frac = start - total
+    if frac >= 0.05:
+        return f"{m}:{s:02d}.{int(round(frac * 10))}"
+    return f"{m}:{s:02d}"
+
+
+# ---------------------------------------------------------------------------
+# Keyboard
+# ---------------------------------------------------------------------------
+
+def build_keyboard(volume: int, start: float, mini_app_url: str | None = None) -> InlineKeyboardMarkup:
     vi = VOLUME_STEPS.index(volume) if volume in VOLUME_STEPS else VOLUME_STEPS.index(100)
     vd = VOLUME_STEPS[max(0, vi - 1)]
     vu = VOLUME_STEPS[min(len(VOLUME_STEPS) - 1, vi + 1)]
     vol_label = "🔇 Replace" if volume == 100 else f"🔊 {volume}% (mix)"
 
-    rows = [
-        [
-            InlineKeyboardButton(f"◀ {vd}%", callback_data=f"vol:{vd}"),
-            InlineKeyboardButton(vol_label, callback_data="noop"),
-            InlineKeyboardButton(f"▶ {vu}%", callback_data=f"vol:{vu}"),
-        ],
-        [
-            InlineKeyboardButton("🎬 Mix & Send", callback_data="mix"),
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_mix"),
-        ],
-    ]
-    return InlineKeyboardMarkup(rows)
+    ps = prev_step(start)
+    ns = next_step(start)
 
-
-def build_full_keyboard(volume: int, start: int) -> InlineKeyboardMarkup:
-    """Full keyboard with start-position controls (fallback when no Mini App)."""
-    START_STEPS = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120]
-    vi = VOLUME_STEPS.index(volume) if volume in VOLUME_STEPS else VOLUME_STEPS.index(100)
-    si = START_STEPS.index(start) if start in START_STEPS else 0
-    vd = VOLUME_STEPS[max(0, vi - 1)]
-    vu = VOLUME_STEPS[min(len(VOLUME_STEPS) - 1, vi + 1)]
-    sd = START_STEPS[max(0, si - 1)]
-    su = START_STEPS[min(len(START_STEPS) - 1, si + 1)]
-    vol_label = "🔇 Replace" if volume == 100 else f"🔊 {volume}% (mix)"
+    third_row = (
+        [InlineKeyboardButton("🎧 Precise selector", web_app=WebAppInfo(url=mini_app_url))]
+        if mini_app_url
+        else [InlineKeyboardButton("🎧 Preview 15s", callback_data="preview")]
+    )
 
     return InlineKeyboardMarkup([
         [
@@ -228,13 +214,13 @@ def build_full_keyboard(volume: int, start: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"▶ {vu}%", callback_data=f"vol:{vu}"),
         ],
         [
-            InlineKeyboardButton(f"⏮ {sd}s", callback_data=f"start:{sd}"),
-            InlineKeyboardButton(f"▶ {start}s", callback_data="noop"),
-            InlineKeyboardButton(f"⏭ {su}s", callback_data=f"start:{su}"),
+            InlineKeyboardButton(f"⏮ {ps}s", callback_data=f"start:goto:{ps}"),
+            InlineKeyboardButton("−1s", callback_data="start:sub1"),
+            InlineKeyboardButton(f"▶ {fmt_start(start)}", callback_data="noop"),
+            InlineKeyboardButton("+1s", callback_data="start:add1"),
+            InlineKeyboardButton(f"⏭ {ns}s", callback_data=f"start:goto:{ns}"),
         ],
-        [
-            InlineKeyboardButton("🎧 Preview 15s", callback_data="preview"),
-        ],
+        third_row,
         [
             InlineKeyboardButton("🎬 Mix & Send", callback_data="mix"),
             InlineKeyboardButton("❌ Cancel", callback_data="cancel_mix"),
@@ -243,7 +229,7 @@ def build_full_keyboard(volume: int, start: int) -> InlineKeyboardMarkup:
 
 
 # ---------------------------------------------------------------------------
-# aiohttp web server (Mini App backend)
+# aiohttp web server
 # ---------------------------------------------------------------------------
 
 async def serve_audio(request: aio_web.Request) -> aio_web.Response:
@@ -258,24 +244,62 @@ async def serve_audio(request: aio_web.Request) -> aio_web.Response:
 
 
 async def serve_miniapp(request: aio_web.Request) -> aio_web.Response:
-    html_path = Path(__file__).parent / "miniapp.html"
-    return aio_web.FileResponse(html_path)
+    return aio_web.FileResponse(Path(__file__).parent / "miniapp.html")
+
+
+async def set_position(request: aio_web.Request) -> aio_web.Response:
+    """Called by the Mini App when the user confirms a position."""
+    try:
+        data       = await request.json()
+        token      = data["token"]
+        chat_id    = int(data["chat_id"])
+        user_id    = int(data["user_id"])
+        message_id = int(data["message_id"])
+        start_sec  = round(float(data["start_sec"]), 2)
+    except (KeyError, ValueError, json.JSONDecodeError):
+        return aio_web.Response(status=400, text="Bad request")
+
+    if token not in _audio_sessions:
+        return aio_web.Response(status=404, text="Session expired")
+
+    if not _bot_app:
+        return aio_web.Response(status=503, text="Bot not ready")
+
+    # Update stored user data
+    user_data = _bot_app.user_data.setdefault(user_id, {})
+    user_data["mix_start"] = start_sec
+    user_data["edit_state"] = "configuring"
+
+    volume      = user_data.get("mix_volume", 100)
+    mini_app_url = user_data.get("mini_app_url")
+
+    try:
+        await _bot_app.bot.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=build_keyboard(volume, start_sec, mini_app_url),
+        )
+    except Exception as e:
+        logger.error("Failed to edit keyboard after position set: %s", e)
+
+    return aio_web.Response(status=200, text="OK")
 
 
 async def post_init(application: Application) -> None:
-    global _web_runner
+    global _web_runner, _bot_app
+    _bot_app = application
     if not MINI_APP_HOST:
         logger.info("RAILWAY_PUBLIC_DOMAIN not set — Mini App disabled")
         return
     aio_app = aio_web.Application()
     aio_app.router.add_get("/audio/{token}", serve_audio)
     aio_app.router.add_get("/miniapp", serve_miniapp)
+    aio_app.router.add_post("/set-position", set_position)
     _web_runner = aio_web.AppRunner(aio_app)
     await _web_runner.setup()
     port = int(os.environ.get("PORT", 8080))
-    site = aio_web.TCPSite(_web_runner, "0.0.0.0", port)
-    await site.start()
-    logger.info("Mini App web server started on port %d", port)
+    await aio_web.TCPSite(_web_runner, "0.0.0.0", port).start()
+    logger.info("Web server started on port %d", port)
 
 
 async def post_shutdown(application: Application) -> None:
@@ -303,16 +327,14 @@ async def handle_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not msg.reply_to_message or not msg.reply_to_message.video:
         await msg.reply_text("Reply to one of my videos with /edit to add music to it.")
         return
-
     video = msg.reply_to_message.video
-    context.user_data["edit_video_file_id"] = video.file_id
+    context.user_data["edit_video_file_id"]  = video.file_id
     context.user_data["edit_video_duration"] = video.duration
-    context.user_data["edit_video_width"] = video.width
-    context.user_data["edit_video_height"] = video.height
-    context.user_data["edit_state"] = "waiting_for_audio"
+    context.user_data["edit_video_width"]    = video.width
+    context.user_data["edit_video_height"]   = video.height
+    context.user_data["edit_state"]          = "waiting_for_audio"
     context.user_data.setdefault("mix_volume", 100)
     context.user_data["mix_start"] = 0
-
     await msg.reply_text("🎵 Forward me an audio file to mix into this video.")
 
 
@@ -330,10 +352,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     status = await update.message.reply_text("⏳ Loading audio...")
 
-    # Clean up any previous session for this user
+    # Clean up any previous session
     _cleanup_session(context.user_data.pop("edit_token", None))
 
-    # Download to a persistent temp dir so the Mini App can serve it
+    # Download audio to a persistent temp dir
     tmpdir = tempfile.TemporaryDirectory()
     audio_path = os.path.join(tmpdir.name, "audio")
     try:
@@ -346,64 +368,37 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     duration = get_audio_duration(audio_path)
-    token = str(uuid.uuid4())
+    token    = str(uuid.uuid4())
     _audio_sessions[token] = {"path": audio_path, "tmpdir": tmpdir, "duration": duration}
 
     context.user_data["edit_audio_file_id"] = audio.file_id
-    context.user_data["edit_token"] = token
-    context.user_data["edit_audio_duration"] = duration
-    context.user_data["mix_start"] = 0
+    context.user_data["edit_token"]         = token
+    context.user_data["edit_state"]         = "configuring"
+    context.user_data["mix_start"]          = 0
+    volume = context.user_data.get("mix_volume", 100)
 
     await status.delete()
 
+    # Send the keyboard message; we need its message_id to build the Mini App URL
+    sent = await update.message.reply_text(
+        "🎵 Audio ready! Use the buttons to set start position, or open the Precise Selector:",
+        reply_markup=build_keyboard(volume, 0, None),  # placeholder — updated below
+    )
+
+    # Build Mini App URL now that we have the message_id
+    mini_app_url = None
     if MINI_APP_HOST:
-        context.user_data["edit_state"] = "selecting_position"
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
         mini_app_url = (
             f"https://{MINI_APP_HOST}/miniapp"
             f"?token={token}&duration={int(duration)}"
+            f"&chat_id={chat_id}&user_id={user_id}&message_id={sent.message_id}"
         )
-        await update.message.reply_text(
-            "🎵 Audio loaded! Open the selector to pick your start position:",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    "🎧 Select start position",
-                    web_app=WebAppInfo(url=mini_app_url),
-                )
-            ]]),
-        )
-    else:
-        # No Mini App — fall back to button-based keyboard
-        context.user_data["edit_state"] = "configuring"
-        context.user_data["keyboard_type"] = "full"
-        volume = context.user_data.get("mix_volume", 100)
-        await update.message.reply_text(
-            "🎵 Audio ready! Adjust settings then hit Mix & Send:",
-            reply_markup=build_full_keyboard(volume, 0),
-        )
-
-
-async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        data = json.loads(update.message.web_app_data.data)
-        start_sec = round(float(data["start_sec"]), 2)
-    except (json.JSONDecodeError, KeyError, ValueError):
-        logger.error("Invalid webapp data: %s", update.message.web_app_data.data)
-        await update.message.reply_text("Something went wrong. Please try /edit again.")
-        return
-
-    context.user_data["mix_start"] = start_sec
-    context.user_data["edit_state"] = "configuring"
-    context.user_data["keyboard_type"] = "volume_only"
-    volume = context.user_data.get("mix_volume", 100)
-
-    total_s = int(start_sec)
-    m, s = divmod(total_s, 60)
-    frac = start_sec - total_s
-    pos_str = f"{m}:{s:02d}.{int(frac * 10)}"
-    await update.message.reply_text(
-        f"✅ Start position set to {pos_str}\n\nAdjust volume then hit Mix & Send:",
-        reply_markup=build_volume_keyboard(volume),
-    )
+        context.user_data["mini_app_url"] = mini_app_url
+        context.user_data["keyboard_message_id"] = sent.message_id
+        # Edit keyboard to include the Mini App button with the correct URL
+        await sent.edit_reply_markup(build_keyboard(volume, 0, mini_app_url))
 
 
 async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -418,31 +413,31 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         _cleanup_session(context.user_data.pop("edit_token", None))
         for key in ("edit_state", "edit_video_file_id", "edit_audio_file_id",
                     "edit_video_duration", "edit_video_width", "edit_video_height",
-                    "keyboard_type"):
+                    "mini_app_url", "keyboard_message_id"):
             context.user_data.pop(key, None)
         await query.edit_message_text("Mix cancelled.")
         return
 
     if data == "preview":
-        token = context.user_data.get("edit_token")
-        start = context.user_data.get("mix_start", 0)
-        session = _audio_sessions.get(token) if token else None
+        token        = context.user_data.get("edit_token")
+        start        = context.user_data.get("mix_start", 0)
         audio_file_id = context.user_data.get("edit_audio_file_id")
+        session      = _audio_sessions.get(token) if token else None
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 if session and os.path.exists(session["path"]):
                     audio_path = session["path"]
                     preview_path = extract_audio_preview(audio_path, start, tmpdir)
                 elif audio_file_id:
-                    audio_tg = await context.bot.get_file(audio_file_id)
+                    tg = await context.bot.get_file(audio_file_id)
                     audio_path = os.path.join(tmpdir, "audio")
-                    await audio_tg.download_to_drive(audio_path)
+                    await tg.download_to_drive(audio_path)
                     preview_path = extract_audio_preview(audio_path, start, tmpdir)
                 else:
                     await query.answer("No audio found.", show_alert=True)
                     return
+                m, s = divmod(int(start), 60)
                 with open(preview_path, "rb") as f:
-                    m, s = divmod(start, 60)
                     await context.bot.send_audio(
                         chat_id=query.message.chat_id,
                         audio=f,
@@ -456,26 +451,37 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.exception("Preview error")
         return
 
+    # --- Handle state changes ---
+    start  = context.user_data.get("mix_start", 0)
+    volume = context.user_data.get("mix_volume", 100)
+
     if data.startswith("vol:"):
         context.user_data["mix_volume"] = int(data.split(":")[1])
-    elif data.startswith("start:"):
-        context.user_data["mix_start"] = int(data.split(":")[1])
+        volume = context.user_data["mix_volume"]
+
+    elif data == "start:sub1":
+        context.user_data["mix_start"] = round(max(0.0, start - 1), 2)
+        start = context.user_data["mix_start"]
+
+    elif data == "start:add1":
+        context.user_data["mix_start"] = round(start + 1, 2)
+        start = context.user_data["mix_start"]
+
+    elif data.startswith("start:goto:"):
+        context.user_data["mix_start"] = float(data[len("start:goto:"):])
+        start = context.user_data["mix_start"]
 
     if data != "mix":
-        volume = context.user_data["mix_volume"]
-        start = context.user_data["mix_start"]
-        if context.user_data.get("keyboard_type") == "volume_only":
-            await query.edit_message_reply_markup(build_volume_keyboard(volume))
-        else:
-            await query.edit_message_reply_markup(build_full_keyboard(volume, start))
+        mini_app_url = context.user_data.get("mini_app_url")
+        await query.edit_message_reply_markup(build_keyboard(volume, start, mini_app_url))
         return
 
     # --- Do the mix ---
-    video_file_id = context.user_data.get("edit_video_file_id")
-    audio_file_id = context.user_data.get("edit_audio_file_id")
-    token = context.user_data.get("edit_token")
-    volume = context.user_data.get("mix_volume", 100)
-    start = context.user_data.get("mix_start", 0)
+    video_file_id  = context.user_data.get("edit_video_file_id")
+    audio_file_id  = context.user_data.get("edit_audio_file_id")
+    token          = context.user_data.get("edit_token")
+    volume         = context.user_data.get("mix_volume", 100)
+    start          = context.user_data.get("mix_start", 0)
 
     if not video_file_id or not audio_file_id:
         await query.edit_message_text("Session expired. Reply to a video with /edit to start over.")
@@ -484,18 +490,16 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text("⏳ Mixing audio, please wait...")
 
     session = _audio_sessions.get(token) if token else None
-
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            video_tg = await context.bot.get_file(video_file_id)
+            video_tg   = await context.bot.get_file(video_file_id)
             video_path = os.path.join(tmpdir, "video.mp4")
             await video_tg.download_to_drive(video_path)
 
-            # Use pre-downloaded audio if available (Mini App flow), else re-download
             if session and os.path.exists(session["path"]):
                 audio_path = session["path"]
             else:
-                audio_tg = await context.bot.get_file(audio_file_id)
+                audio_tg   = await context.bot.get_file(audio_file_id)
                 audio_path = os.path.join(tmpdir, "audio")
                 await audio_tg.download_to_drive(audio_path)
 
@@ -526,7 +530,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             _cleanup_session(token)
             for key in ("edit_state", "edit_video_file_id", "edit_audio_file_id",
                         "edit_video_duration", "edit_video_width", "edit_video_height",
-                        "edit_token", "keyboard_type"):
+                        "edit_token", "mini_app_url", "keyboard_message_id"):
                 context.user_data.pop(key, None)
 
     except subprocess.CalledProcessError as e:
@@ -550,13 +554,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def process_url(update: Update, url: str) -> None:
-    downloading_msg = (
+    status_msg = await update.message.reply_text(
         "Downloading... (Instagram videos may take a bit longer)"
-        if is_instagram_url(url)
-        else "Downloading..."
+        if is_instagram_url(url) else "Downloading..."
     )
-    status_msg = await update.message.reply_text(downloading_msg)
-
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "video.%(ext)s")
@@ -612,7 +613,6 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("edit", handle_edit))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio))
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
     app.add_handler(CallbackQueryHandler(handle_mix_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started. Polling...")
