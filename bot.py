@@ -41,6 +41,15 @@ if _COOKIES_B64 and not COOKIES_FILE.exists():
     except Exception:
         logger.warning("Failed to decode INSTAGRAM_COOKIES — Instagram downloads will likely fail")
 
+YT_COOKIES_FILE = Path("yt_cookies.txt")
+_YT_COOKIES_B64 = os.environ.get("YOUTUBE_COOKIES", "").strip()
+if _YT_COOKIES_B64 and not YT_COOKIES_FILE.exists():
+    try:
+        YT_COOKIES_FILE.write_bytes(base64.b64decode(_YT_COOKIES_B64))
+        logger.info("Wrote yt_cookies.txt from YOUTUBE_COOKIES env var")
+    except Exception:
+        logger.warning("Failed to decode YOUTUBE_COOKIES — YouTube downloads may fail")
+
 URL_PATTERN = re.compile(
     r"https?://(www\.)?"
     r"(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com"
@@ -99,8 +108,10 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
     if "tiktok.com" in url:
         opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
     if is_youtube_url(url):
-        # ios client bypasses YouTube bot-detection without needing cookies
-        opts["extractor_args"] = {"youtube": {"player_client": ["ios", "web_creator"]}}
+        # tv_embedded client bypasses YouTube sign-in/PO-token requirements
+        opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "web_creator"]}}
+        if YT_COOKIES_FILE.exists():
+            opts["cookiefile"] = str(YT_COOKIES_FILE)
     if is_instagram_url(url) and COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
