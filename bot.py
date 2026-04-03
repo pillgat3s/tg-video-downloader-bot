@@ -207,7 +207,7 @@ def fmt_start(start: float) -> str:
 # Keyboard
 # ---------------------------------------------------------------------------
 
-def build_keyboard(volume: int, start: float, loop: bool = False, mini_app_url: str | None = None) -> InlineKeyboardMarkup:
+def build_keyboard(volume: int, start: float, loop: bool = False, mini_app_url: str | None = None, show_loop: bool = False) -> InlineKeyboardMarkup:
     vi = VOLUME_STEPS.index(volume) if volume in VOLUME_STEPS else VOLUME_STEPS.index(100)
     vd = VOLUME_STEPS[max(0, vi - 1)]
     vu = VOLUME_STEPS[min(len(VOLUME_STEPS) - 1, vi + 1)]
@@ -216,15 +216,14 @@ def build_keyboard(volume: int, start: float, loop: bool = False, mini_app_url: 
     ps = prev_step(start)
     ns = next_step(start)
 
-    loop_label = "🔁 Loop: ON" if loop else "➡️ Loop: OFF"
-
     third_row = (
         [InlineKeyboardButton("🎧 Precise selector", web_app=WebAppInfo(url=mini_app_url))]
         if mini_app_url
         else [InlineKeyboardButton("🎧 Preview 15s", callback_data="preview")]
     )
 
-    return InlineKeyboardMarkup([
+    loop_label = "🔁 Loop: ON" if loop else "➡️ Loop: OFF"
+    rows = [
         [
             InlineKeyboardButton(f"◀ {vd}%", callback_data=f"vol:{vd}"),
             InlineKeyboardButton(vol_label, callback_data="noop"),
@@ -237,13 +236,15 @@ def build_keyboard(volume: int, start: float, loop: bool = False, mini_app_url: 
             InlineKeyboardButton("+1s", callback_data="start:add1"),
             InlineKeyboardButton(f"⏭ {ns}s", callback_data=f"start:goto:{ns}"),
         ],
-        [InlineKeyboardButton(loop_label, callback_data="toggle_loop")],
-        third_row,
-        [
-            InlineKeyboardButton("🎬 Mix & Send", callback_data="mix"),
-            InlineKeyboardButton("❌ Cancel", callback_data="cancel_mix"),
-        ],
+    ]
+    if show_loop:
+        rows.append([InlineKeyboardButton(loop_label, callback_data="toggle_loop")])
+    rows.append(third_row)
+    rows.append([
+        InlineKeyboardButton("🎬 Mix & Send", callback_data="mix"),
+        InlineKeyboardButton("❌ Cancel", callback_data="cancel_mix"),
     ])
+    return InlineKeyboardMarkup(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +294,11 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
         user_data["mix_start"] = start_sec
         user_data["edit_state"] = "configuring"
 
-        volume       = user_data.get("mix_volume", 100)
-        loop         = user_data.get("mix_loop", False)
+        volume    = user_data.get("mix_volume", 100)
+        loop      = user_data.get("mix_loop", False)
+        audio_dur = user_data.get("edit_audio_duration", float("inf"))
+        video_dur = user_data.get("edit_video_duration", float("inf"))
+        show_loop = audio_dur > 0 and audio_dur < video_dur
         mini_app_url = user_data.get("mini_app_url")
 
         total = int(start_sec)
@@ -309,7 +313,7 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
                 await _bot_app.bot.edit_message_reply_markup(
                     chat_id=chat_id,
                     message_id=message_id,
-                    reply_markup=build_keyboard(volume, start_sec, loop, mini_app_url),
+                    reply_markup=build_keyboard(volume, start_sec, loop, mini_app_url, show_loop),
                 )
                 edited = True
             except Exception as e:
@@ -321,7 +325,7 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
                 await _bot_app.bot.send_message(
                     chat_id=chat_id,
                     text=f"✅ Position set to {pos_str} — adjust volume then Mix & Send:",
-                    reply_markup=build_keyboard(volume, start_sec, loop, None),
+                    reply_markup=build_keyboard(volume, start_sec, loop, None, show_loop),
                 )
             except Exception as e:
                 logger.error("Failed to send fallback message: %s", e)
@@ -419,20 +423,23 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     token    = str(uuid.uuid4())
     _audio_sessions[token] = {"path": audio_path, "tmpdir": tmpdir, "duration": duration}
 
-    context.user_data["edit_audio_file_id"] = audio.file_id
-    context.user_data["edit_token"]         = token
-    context.user_data["edit_state"]         = "configuring"
-    context.user_data["mix_start"]          = 0
+    context.user_data["edit_audio_file_id"]  = audio.file_id
+    context.user_data["edit_token"]          = token
+    context.user_data["edit_state"]          = "configuring"
+    context.user_data["mix_start"]           = 0
+    context.user_data["edit_audio_duration"] = duration
     context.user_data.setdefault("mix_loop", False)
-    volume = context.user_data.get("mix_volume", 100)
-    loop   = context.user_data.get("mix_loop", False)
+    volume    = context.user_data.get("mix_volume", 100)
+    loop      = context.user_data.get("mix_loop", False)
+    video_dur = context.user_data.get("edit_video_duration", float("inf"))
+    show_loop = duration > 0 and duration < video_dur
 
     await status.delete()
 
     # Send the keyboard message; we need its message_id to build the Mini App URL
     sent = await update.message.reply_text(
         "🎵 Audio ready! Use the buttons to set start position, or open the Precise Selector:",
-        reply_markup=build_keyboard(volume, 0, loop, None),  # placeholder — updated below
+        reply_markup=build_keyboard(volume, 0, loop, None, show_loop),  # placeholder — updated below
     )
 
     # Build Mini App URL now that we have the message_id
@@ -448,7 +455,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data["mini_app_url"] = mini_app_url
         context.user_data["keyboard_message_id"] = sent.message_id
         # Edit keyboard to include the Mini App button with the correct URL
-        await sent.edit_reply_markup(build_keyboard(volume, 0, loop, mini_app_url))
+        await sent.edit_reply_markup(build_keyboard(volume, 0, loop, mini_app_url, show_loop))
 
 
 async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -463,7 +470,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         _cleanup_session(context.user_data.pop("edit_token", None))
         for key in ("edit_state", "edit_video_file_id", "edit_audio_file_id",
                     "edit_video_duration", "edit_video_width", "edit_video_height",
-                    "mini_app_url", "keyboard_message_id"):
+                    "mini_app_url", "keyboard_message_id", "mix_loop", "edit_audio_duration"):
             context.user_data.pop(key, None)
         await query.edit_message_text("Mix cancelled.")
         return
@@ -502,9 +509,12 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     # --- Handle state changes ---
-    start  = context.user_data.get("mix_start", 0)
-    volume = context.user_data.get("mix_volume", 100)
-    loop   = context.user_data.get("mix_loop", False)
+    start     = context.user_data.get("mix_start", 0)
+    volume    = context.user_data.get("mix_volume", 100)
+    loop      = context.user_data.get("mix_loop", False)
+    audio_dur = context.user_data.get("edit_audio_duration", float("inf"))
+    video_dur = context.user_data.get("edit_video_duration", float("inf"))
+    show_loop = audio_dur > 0 and audio_dur < video_dur
 
     if data.startswith("vol:"):
         context.user_data["mix_volume"] = int(data.split(":")[1])
@@ -528,7 +538,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if data != "mix":
         mini_app_url = context.user_data.get("mini_app_url")
-        await query.edit_message_reply_markup(build_keyboard(volume, start, loop, mini_app_url))
+        await query.edit_message_reply_markup(build_keyboard(volume, start, loop, mini_app_url, show_loop))
         return
 
     # --- Do the mix ---
@@ -586,7 +596,8 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             _cleanup_session(token)
             for key in ("edit_state", "edit_video_file_id", "edit_audio_file_id",
                         "edit_video_duration", "edit_video_width", "edit_video_height",
-                        "edit_token", "mini_app_url", "keyboard_message_id", "mix_loop"):
+                        "edit_token", "mini_app_url", "keyboard_message_id",
+                        "mix_loop", "edit_audio_duration"):
                 context.user_data.pop(key, None)
 
     except subprocess.CalledProcessError as e:
