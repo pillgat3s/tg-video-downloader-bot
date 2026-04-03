@@ -145,32 +145,32 @@ def ensure_telegram_compatible(path: str) -> str:
 
 def _download_youtube_pytubefix(url: str, output_dir: str, yt_cookies_path: str | None = None) -> tuple[str, dict]:
     from pytubefix import YouTube
-    yt = YouTube(url, use_po_token=True)
 
-    video_stream = (
-        yt.streams.filter(only_video=True, file_extension="mp4")
+    yt = YouTube(url)
+    # Try progressive (pre-muxed) first
+    stream = (
+        yt.streams.filter(progressive=True, file_extension="mp4")
         .order_by("resolution").desc().first()
-        or yt.streams.filter(only_video=True).order_by("resolution").desc().first()
     )
-    audio_stream = yt.streams.filter(only_audio=True).order_by("abr").desc().first()
-
-    if video_stream and audio_stream:
+    if not stream:
+        # Fall back to highest-res video-only + best audio, merge with ffmpeg
+        video_stream = yt.streams.filter(only_video=True).order_by("resolution").desc().first()
+        audio_stream = yt.streams.filter(only_audio=True).order_by("abr").desc().first()
+        if not video_stream:
+            raise RuntimeError("No streams available via pytubefix")
         vpath = video_stream.download(output_path=output_dir, filename="yt_video")
-        apath = audio_stream.download(output_path=output_dir, filename="yt_audio")
+        apath = audio_stream.download(output_path=output_dir, filename="yt_audio") if audio_stream else None
         merged = os.path.join(output_dir, "yt_merged.mp4")
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", vpath, "-i", apath,
-             "-c:v", "copy", "-c:a", "aac", "-shortest", merged],
-            check=True, capture_output=True,
-        )
+        if apath:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", vpath, "-i", apath,
+                 "-c:v", "copy", "-c:a", "aac", "-shortest", merged],
+                check=True, capture_output=True,
+            )
+        else:
+            merged = vpath
         path = merged
     else:
-        stream = (
-            yt.streams.filter(progressive=True, file_extension="mp4")
-            .order_by("resolution").desc().first()
-        )
-        if not stream:
-            raise RuntimeError("No streams available via pytubefix")
         path = stream.download(output_path=output_dir, filename="yt_video.mp4")
 
     path = reencode_h264(path)
@@ -718,19 +718,11 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 await status_msg.edit_text("Unsupported URL or platform.")
                 return
             except Exception as e:
+                err_str = str(e)
                 logger.error("Download error for %s: %s: %s", url, type(e).__name__, e)
-                if is_youtube_url(url):
-                    await status_msg.edit_text(
-                        "❌ YouTube download failed.\n\n"
-                        "YouTube quality may not be great due to server limitations. "
-                        "If the video requires a login, use /setcookies to provide your YouTube cookies.\n"
-                        "⚠️ Cookies are session-only and need to be re-set after each bot update."
-                    )
-                else:
-                    err_str = str(e)
-                    await status_msg.edit_text(
-                        f"Download failed: {err_str.split(chr(10))[0][:200]}"
-                    )
+                await status_msg.edit_text(
+                    f"Download failed: {type(e).__name__}: {err_str.split(chr(10))[0][:180]}"
+                )
                 return
 
             size = os.path.getsize(video_path)

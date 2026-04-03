@@ -1,4 +1,4 @@
 python-telegram-bot==21.6
 yt-dlp==2026.3.17
 aiohttp==3.10.5
-pytubefix==7.4.0
+pytubefix
