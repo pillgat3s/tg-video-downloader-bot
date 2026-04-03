@@ -102,9 +102,21 @@ def build_ydl_opts(output_path: str, url: str, yt_cookies_path: str | None = Non
         "no_warnings": False,
     }
     if is_youtube_url(url):
-        # tv_embedded only has combined streams (no separate video+audio), use best single stream
-        opts["format"] = "best[height<=1080]/best"
-        opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "web_creator"]}}
+        # With cookies: web client has full format access
+        # Without cookies: tv_embedded avoids the sign-in wall (but limited formats)
+        has_yt_cookies = bool(yt_cookies_path or YT_COOKIES_FILE.exists())
+        if has_yt_cookies:
+            clients = ["web", "web_creator"]
+        else:
+            clients = ["tv_embedded", "web_creator"]
+        opts["format"] = (
+            "bestvideo[height<=1080]+bestaudio"
+            "/bestvideo[height<=1080]"
+            "/best[height<=1080]"
+            "/bestvideo+bestaudio"
+            "/best"
+        )
+        opts["extractor_args"] = {"youtube": {"player_client": clients}}
         if yt_cookies_path:
             opts["cookiefile"] = yt_cookies_path
         elif YT_COOKIES_FILE.exists():
