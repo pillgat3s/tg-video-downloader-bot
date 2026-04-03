@@ -139,39 +139,37 @@ def _download_youtube_pytubefix(url: str, output_dir: str) -> tuple[str, dict]:
     from pytubefix import YouTube
 
     yt = YouTube(url)
-    # Try progressive (pre-muxed) up to 1080p first
-    stream = (
-        yt.streams.filter(progressive=True, file_extension="mp4")
+
+    # Prefer adaptive (separate video + audio) for best quality, fall back to progressive
+    video_stream = (
+        yt.streams.filter(only_video=True, file_extension="mp4")
         .order_by("resolution").desc().first()
+        or yt.streams.filter(only_video=True).order_by("resolution").desc().first()
     )
-    if not stream:
-        # Fall back to highest-res video-only + best audio, merge with ffmpeg
-        video_stream = yt.streams.filter(only_video=True).order_by("resolution").desc().first()
-        audio_stream = yt.streams.filter(only_audio=True).order_by("abr").desc().first()
-        if not video_stream:
-            raise RuntimeError("No streams available via pytubefix")
+    audio_stream = yt.streams.filter(only_audio=True).order_by("abr").desc().first()
+
+    if video_stream and audio_stream:
         vpath = video_stream.download(output_path=output_dir, filename="yt_video")
-        apath = audio_stream.download(output_path=output_dir, filename="yt_audio") if audio_stream else None
+        apath = audio_stream.download(output_path=output_dir, filename="yt_audio")
         merged = os.path.join(output_dir, "yt_merged.mp4")
-        if apath:
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", vpath, "-i", apath,
-                 "-c:v", "copy", "-c:a", "aac", "-shortest", merged],
-                check=True, capture_output=True,
-            )
-        else:
-            merged = vpath
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", vpath, "-i", apath,
+             "-c:v", "copy", "-c:a", "aac", "-shortest", merged],
+            check=True, capture_output=True,
+        )
         path = merged
     else:
+        # Last resort: progressive (pre-muxed, max 720p)
+        stream = (
+            yt.streams.filter(progressive=True, file_extension="mp4")
+            .order_by("resolution").desc().first()
+        )
+        if not stream:
+            raise RuntimeError("No streams available via pytubefix")
         path = stream.download(output_path=output_dir, filename="yt_video.mp4")
 
     path = reencode_h264(path)
-    info = {
-        "title": yt.title,
-        "duration": yt.length,
-        "width": None,
-        "height": None,
-    }
+    info = {"title": yt.title, "duration": yt.length, "width": None, "height": None}
     return path, info
 
 
