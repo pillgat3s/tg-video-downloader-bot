@@ -161,7 +161,7 @@ def mix_audio_into_video(video_path: str, audio_path: str, volume: int, start_se
             "ffmpeg", "-y", "-i", video_path,
             "-ss", str(start_sec), *loop_flags, "-i", audio_path,
             "-filter_complex",
-            f"[0:a]volume=1[oa];[1:a]volume={vol}[na];[oa][na]amix=inputs=2:duration=first[aout]",
+            f"[0:a]volume=1[oa];[1:a]volume={vol}[na];[oa][na]amix=inputs=2:duration=first:normalize=0[aout]",
             "-map", "0:v", "-map", "[aout]",
             "-shortest", "-c:v", "copy", "-c:a", "aac", output_path,
         ]
