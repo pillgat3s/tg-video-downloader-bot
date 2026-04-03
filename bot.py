@@ -718,11 +718,19 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 await status_msg.edit_text("Unsupported URL or platform.")
                 return
             except Exception as e:
-                err_str = str(e)
                 logger.error("Download error for %s: %s: %s", url, type(e).__name__, e)
-                await status_msg.edit_text(
-                    f"Download failed: {err_str.split(chr(10))[0][:200]}"
-                )
+                if is_youtube_url(url):
+                    await status_msg.edit_text(
+                        "❌ YouTube download failed.\n\n"
+                        "YouTube quality may not be great due to server limitations. "
+                        "If the video requires a login, use /setcookies to provide your YouTube cookies.\n"
+                        "⚠️ Cookies are session-only and need to be re-set after each bot update."
+                    )
+                else:
+                    err_str = str(e)
+                    await status_msg.edit_text(
+                        f"Download failed: {err_str.split(chr(10))[0][:200]}"
+                    )
                 return
 
             size = os.path.getsize(video_path)
