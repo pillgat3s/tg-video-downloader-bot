@@ -413,11 +413,10 @@ async def post_init(application: Application) -> None:
     _bot_app = application
 
     await application.bot.set_my_commands([
-        ("audio",      "Add music to a video — reply to a video"),
-        ("stretch",    "Resize a video — reply to a video"),
-        ("setcookies", "Set your YouTube cookies for better access"),
-        ("settings",   "View and adjust your preferences"),
-        ("help",       "Show all commands and info"),
+        ("audio",    "Add music to a video — reply to a video"),
+        ("stretch",  "Resize a video — reply to a video"),
+        ("settings", "View and adjust your preferences"),
+        ("help",     "Show all commands and info"),
     ])
 
     if not MINI_APP_HOST:
