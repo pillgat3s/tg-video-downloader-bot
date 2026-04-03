@@ -263,48 +263,55 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
     if not _bot_app:
         return aio_web.Response(status=503, text="Bot not ready")
 
-    if token not in _audio_sessions:
-        logger.warning("set_position: session %s not found (may have expired after redeploy)", token)
-        # Don't reject — still update user_data and respond so mini app can close
+    try:
+        if token not in _audio_sessions:
+            logger.warning("set_position: session %s not found (may have expired after redeploy)", token)
+            # Don't reject — still update user_data and respond so mini app can close
 
-    # Update user data
-    user_data = _bot_app.user_data.setdefault(user_id, {})
-    user_data["mix_start"] = start_sec
-    user_data["edit_state"] = "configuring"
+        # Update user data
+        if user_id not in _bot_app.user_data:
+            _bot_app.user_data[user_id] = {}
+        user_data = _bot_app.user_data[user_id]
+        user_data["mix_start"] = start_sec
+        user_data["edit_state"] = "configuring"
 
-    volume       = user_data.get("mix_volume", 100)
-    mini_app_url = user_data.get("mini_app_url")
+        volume       = user_data.get("mix_volume", 100)
+        mini_app_url = user_data.get("mini_app_url")
 
-    total = int(start_sec)
-    m, s  = divmod(total, 60)
-    frac  = start_sec - total
-    pos_str = f"{m}:{s:02d}.{int(round(frac * 10))}" if frac >= 0.05 else f"{m}:{s:02d}"
+        total = int(start_sec)
+        m, s  = divmod(total, 60)
+        frac  = start_sec - total
+        pos_str = f"{m}:{s:02d}.{int(round(frac * 10))}" if frac >= 0.05 else f"{m}:{s:02d}"
 
-    # Try to edit the existing keyboard message in-place
-    edited = False
-    if message_id:
-        try:
-            await _bot_app.bot.edit_message_reply_markup(
-                chat_id=chat_id,
-                message_id=message_id,
-                reply_markup=build_keyboard(volume, start_sec, mini_app_url),
-            )
-            edited = True
-        except Exception as e:
-            logger.error("Failed to edit keyboard: %s", e)
+        # Try to edit the existing keyboard message in-place
+        edited = False
+        if message_id:
+            try:
+                await _bot_app.bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    reply_markup=build_keyboard(volume, start_sec, mini_app_url),
+                )
+                edited = True
+            except Exception as e:
+                logger.error("Failed to edit keyboard: %s", e)
 
-    # Fall back to sending a new message if edit failed
-    if not edited:
-        try:
-            await _bot_app.bot.send_message(
-                chat_id=chat_id,
-                text=f"✅ Position set to {pos_str} — adjust volume then Mix & Send:",
-                reply_markup=build_keyboard(volume, start_sec, None),
-            )
-        except Exception as e:
-            logger.error("Failed to send fallback message: %s", e)
+        # Fall back to sending a new message if edit failed
+        if not edited:
+            try:
+                await _bot_app.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ Position set to {pos_str} — adjust volume then Mix & Send:",
+                    reply_markup=build_keyboard(volume, start_sec, None),
+                )
+            except Exception as e:
+                logger.error("Failed to send fallback message: %s", e)
 
-    return aio_web.Response(status=200, text="OK")
+        return aio_web.Response(status=200, text="OK")
+
+    except Exception as e:
+        logger.exception("set_position unhandled error: %s", e)
+        return aio_web.Response(status=500, text=f"{type(e).__name__}: {e}")
 
 
 async def post_init(application: Application) -> None:
