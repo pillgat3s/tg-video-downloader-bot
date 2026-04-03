@@ -102,9 +102,9 @@ def build_ydl_opts(output_path: str, url: str, yt_cookies_path: str | None = Non
         "no_warnings": False,
     }
     if is_youtube_url(url):
-        opts["format"] = "best"
+        opts["format"] = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
         opts["extractor_args"] = {
-            "youtube": {"player_client": ["mweb", "android_creator", "tv_embedded", "web_creator"]}
+            "youtube": {"player_client": ["mweb", "web_creator", "web"]}
         }
         if yt_cookies_path:
             opts["cookiefile"] = yt_cookies_path
