@@ -138,7 +138,7 @@ def _download_youtube_pytubefix(url: str, output_dir: str) -> tuple[str, dict]:
     """Try downloading a YouTube video via pytubefix."""
     from pytubefix import YouTube
 
-    yt = YouTube(url)
+    yt = YouTube(url, use_po_token=True)
 
     # Prefer adaptive (separate video + audio) for best quality, fall back to progressive
     video_stream = (
