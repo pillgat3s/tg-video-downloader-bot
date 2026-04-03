@@ -160,7 +160,7 @@
 
     let peaks       = null;
     let duration    = hintDur || 0;
-    let pendingSeek = null;
+    let displayPos  = 0;   // authoritative position — always up to date regardless of iOS state
     let fineAnchor  = 0;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -174,9 +174,8 @@
       statusEl.className = 'status' + (err ? ' error' : '');
     }
     function updateUI() {
-      const c = audio.currentTime;
-      timeBig.textContent = fmt(c, true);
-      curEl.textContent   = fmt(c, true);
+      timeBig.textContent = fmt(displayPos, true);
+      curEl.textContent   = fmt(displayPos, true);
     }
 
     // ── Waveform ─────────────────────────────────────────────────────────────
@@ -186,7 +185,7 @@
       const dpr = window.devicePixelRatio || 1;
       const W = canvas.clientWidth * dpr, H = canvas.clientHeight * dpr;
       if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
-      const dur = duration || 1, playX = (audio.currentTime / dur) * W;
+      const dur = duration || 1, playX = (displayPos / dur) * W;
       const barW = W / peaks.length;
       const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#2ea6ff';
       wctx.clearRect(0, 0, W, H);
@@ -229,8 +228,9 @@
 
     function seekTo(time) {
       const c = Math.max(0, Math.min(time, duration || audio.duration || 0));
-      pendingSeek = c; fineAnchor = c;
-      audio.currentTime = c;
+      displayPos = c;
+      fineAnchor = c;
+      audio.currentTime = c;           // attempt seek (may be lazy on iOS)
       fineSeek.value = 0;
       fineLeft.textContent  = fmt(Math.max(0, c - 2), true);
       fineRight.textContent = fmt(Math.min(duration || 9999, c + 2), true);
@@ -239,15 +239,23 @@
 
     fineSeek.addEventListener('input', () => {
       const t = Math.max(0, Math.min(fineAnchor + parseFloat(fineSeek.value), duration || audio.duration || 0));
-      pendingSeek = t; audio.currentTime = t; updateUI(); renderWaveform();
+      displayPos = t;
+      audio.currentTime = t;
+      updateUI(); renderWaveform();
     });
 
-    // iOS paused-seek fix
-    audio.addEventListener('play',  () => { if (pendingSeek !== null) { const t=pendingSeek; pendingSeek=null; setTimeout(()=>{audio.currentTime=t;},30); } playBtn.textContent='⏸'; });
+    // iOS seek fix: re-assert displayPos every time play starts so iOS can't drift
+    audio.addEventListener('play', () => {
+      audio.currentTime = displayPos;
+      playBtn.textContent = '⏸';
+    });
     audio.addEventListener('pause', () => { playBtn.textContent = '▶'; });
     audio.addEventListener('ended', () => { playBtn.textContent = '▶'; });
-    audio.addEventListener('seeked',() => { pendingSeek = null; });
-    audio.addEventListener('timeupdate', () => { updateUI(); renderWaveform(); });
+    // While playing, keep displayPos in sync with actual audio
+    audio.addEventListener('timeupdate', () => {
+      if (!audio.paused) { displayPos = audio.currentTime; }
+      updateUI(); renderWaveform();
+    });
     audio.addEventListener('loadedmetadata', () => { if (!duration) duration = audio.duration; durEl.textContent = fmt(duration); });
     audio.addEventListener('error', () => setStatus('Failed to load audio.', true));
 
@@ -275,7 +283,7 @@
       confirmBtn.disabled = true;
       confirmBtn.textContent = 'Sending…';
 
-      const startSec = Math.round(audio.currentTime * 100) / 100;
+      const startSec = Math.round(displayPos * 100) / 100;
 
       try {
         const res = await fetch('/set-position', {
