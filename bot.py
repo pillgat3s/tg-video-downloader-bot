@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import yt_dlp
+import instaloader
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
@@ -16,21 +17,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+IG_USERNAME = os.environ.get("INSTAGRAM_USERNAME")
+IG_PASSWORD = os.environ.get("INSTAGRAM_PASSWORD")
 MAX_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
-
-# cookies.txt path — can be a real file or written from the env var below
-COOKIES_FILE = Path("cookies.txt")
-
-# Optional: base64-encoded contents of a cookies.txt file.
-# On Railway, set INSTAGRAM_COOKIES to: base64 -i cookies.txt
-# The bot writes it to disk on startup so yt-dlp can use it.
-_COOKIES_B64 = os.environ.get("INSTAGRAM_COOKIES")
-if _COOKIES_B64 and not COOKIES_FILE.exists():
-    try:
-        COOKIES_FILE.write_bytes(base64.b64decode(_COOKIES_B64))
-        logger.info("Wrote cookies.txt from INSTAGRAM_COOKIES env var")
-    except Exception:
-        logger.warning("Failed to decode INSTAGRAM_COOKIES — Instagram may not work")
 
 URL_PATTERN = re.compile(
     r"https?://(www\.)?"
@@ -40,42 +29,85 @@ URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+INSTAGRAM_SHORTCODE_RE = re.compile(r"/(?:reel|p|tv)/([A-Za-z0-9_-]+)")
+
 
 def extract_urls(text: str) -> list[str]:
     return [m.group() for m in URL_PATTERN.finditer(text)]
 
 
-def build_ydl_opts(output_path: str, url: str) -> dict:
+# ---------------------------------------------------------------------------
+# TikTok — yt-dlp
+# ---------------------------------------------------------------------------
+
+def download_tiktok(url: str, output_path: str) -> str:
     opts = {
         "outtmpl": output_path,
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
-        "quiet": False,  # keep enabled so errors appear in Railway logs
+        "quiet": False,
         "no_warnings": False,
-    }
-
-    if "tiktok.com" in url:
-        opts["extractor_args"] = {
+        "extractor_args": {
             "tiktok": {"download_without_watermark": True}
-        }
-
-    if COOKIES_FILE.exists():
-        opts["cookiefile"] = str(COOKIES_FILE)
-
-    return opts
-
-
-def download_video(url: str, output_path: str) -> str:
-    """Download video and return the final file path."""
-    opts = build_ydl_opts(output_path, url)
+        },
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        final = ydl.prepare_filename(info)
-        p = Path(final)
+        p = Path(ydl.prepare_filename(info))
         if not p.exists():
             p = p.with_suffix(".mp4")
         return str(p)
 
+
+# ---------------------------------------------------------------------------
+# Instagram — instaloader
+# ---------------------------------------------------------------------------
+
+def _make_instaloader() -> instaloader.Instaloader:
+    L = instaloader.Instaloader(
+        download_videos=True,
+        download_video_thumbnails=False,
+        download_geotags=False,
+        download_comments=False,
+        save_metadata=False,
+        compress_json=False,
+        post_metadata_txt_pattern="",
+        filename_pattern="{shortcode}",
+        quiet=False,
+    )
+    if IG_USERNAME and IG_PASSWORD:
+        try:
+            L.login(IG_USERNAME, IG_PASSWORD)
+            logger.info("Logged into Instagram as %s", IG_USERNAME)
+        except Exception as e:
+            logger.warning("Instagram login failed: %s", e)
+    return L
+
+
+# Module-level loader so we reuse the session across requests
+_loader = _make_instaloader()
+
+
+def download_instagram(url: str, output_dir: str) -> str:
+    match = INSTAGRAM_SHORTCODE_RE.search(url)
+    if not match:
+        raise ValueError(f"Could not extract shortcode from Instagram URL: {url}")
+
+    shortcode = match.group(1)
+    post = instaloader.Post.from_shortcode(_loader.context, shortcode)
+
+    _loader.dirname_pattern = output_dir
+    _loader.download_post(post, target=output_dir)
+
+    mp4_files = list(Path(output_dir).glob("*.mp4"))
+    if not mp4_files:
+        raise RuntimeError("No video file found after Instagram download")
+    return str(mp4_files[0])
+
+
+# ---------------------------------------------------------------------------
+# Bot handlers
+# ---------------------------------------------------------------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
@@ -96,14 +128,22 @@ async def process_url(update: Update, url: str) -> None:
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_template = os.path.join(tmpdir, "video.%(ext)s")
+            is_instagram = "instagram.com" in url or "instagr.am" in url
+
             try:
-                video_path = download_video(url, output_template)
-            except yt_dlp.utils.UnsupportedError:
-                await status_msg.edit_text("Unsupported URL or platform.")
-                return
+                if is_instagram:
+                    video_path = download_instagram(url, tmpdir)
+                else:
+                    output_template = os.path.join(tmpdir, "video.%(ext)s")
+                    video_path = download_tiktok(url, output_template)
             except yt_dlp.utils.DownloadError as e:
-                logger.error("Download error for %s: %s", url, e)
+                logger.error("yt-dlp error for %s: %s", url, e)
+                await status_msg.edit_text(
+                    "Download failed. The video may be private, deleted, or unavailable."
+                )
+                return
+            except (instaloader.exceptions.InstaloaderException, RuntimeError, ValueError) as e:
+                logger.error("Instagram error for %s: %s", url, e)
                 await status_msg.edit_text(
                     "Download failed. The video may be private, deleted, or unavailable."
                 )
