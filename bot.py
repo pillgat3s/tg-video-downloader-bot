@@ -1,0 +1,133 @@
+import os
+import re
+import logging
+import tempfile
+from pathlib import Path
+
+import yt_dlp
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+MAX_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+COOKIES_FILE = Path("cookies.txt")
+
+URL_PATTERN = re.compile(
+    r"https?://(www\.)?"
+    r"(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com"
+    r"|instagram\.com|instagr\.am)"
+    r"\S+",
+    re.IGNORECASE,
+)
+
+
+def extract_urls(text: str) -> list[str]:
+    return [m.group() for m in URL_PATTERN.finditer(text)]
+
+
+
+def build_ydl_opts(output_path: str, url: str) -> dict:
+    opts = {
+        "outtmpl": output_path,
+        "format": "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    if "tiktok.com" in url or "tiktok" in url:
+        opts["extractor_args"] = {
+            "tiktok": {"download_without_watermark": True}
+        }
+
+    if COOKIES_FILE.exists():
+        opts["cookiefile"] = str(COOKIES_FILE)
+
+    return opts
+
+
+def download_video(url: str, output_path: str) -> str:
+    """Download video, return final file path."""
+    opts = build_ydl_opts(output_path, url)
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        # yt-dlp may append extension; get actual filename
+        final = ydl.prepare_filename(info)
+        # If merged/converted, yt-dlp changes extension to mp4
+        p = Path(final)
+        if not p.exists():
+            # Try with .mp4 extension
+            p = p.with_suffix(".mp4")
+        return str(p)
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text or ""
+    urls = extract_urls(text)
+
+    if not urls:
+        await update.message.reply_text(
+            "Please send a TikTok or Instagram URL (one per line for multiple videos)."
+        )
+        return
+
+    for url in urls:
+        await process_url(update, url)
+
+
+async def process_url(update: Update, url: str) -> None:
+    status_msg = await update.message.reply_text("Downloading...")
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_template = os.path.join(tmpdir, "video.%(ext)s")
+            try:
+                video_path = download_video(url, output_template)
+            except yt_dlp.utils.UnsupportedError:
+                await status_msg.edit_text("Unsupported URL or platform.")
+                return
+            except yt_dlp.utils.DownloadError as e:
+                logger.error("Download error for %s: %s", url, e)
+                await status_msg.edit_text(
+                    "Download failed. The video may be private, deleted, or unavailable."
+                )
+                return
+
+            size = os.path.getsize(video_path)
+            if size > MAX_SIZE_BYTES:
+                await status_msg.edit_text(
+                    f"Video is too large ({size / 1024 / 1024:.1f} MB). "
+                    "Telegram limits file uploads to 50 MB."
+                )
+                return
+
+            await status_msg.edit_text("Sending video...")
+            with open(video_path, "rb") as f:
+                await update.message.reply_video(
+                    video=f,
+                    supports_streaming=True,
+                    read_timeout=120,
+                    write_timeout=120,
+                )
+            await status_msg.delete()
+
+    except Exception as e:
+        logger.exception("Unexpected error for %s", url)
+        await status_msg.edit_text("An unexpected error occurred. Please try again.")
+
+
+def main() -> None:
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    logger.info("Bot started. Polling...")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
