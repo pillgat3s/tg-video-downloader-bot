@@ -44,7 +44,9 @@ if _COOKIES_B64 and not COOKIES_FILE.exists():
 URL_PATTERN = re.compile(
     r"https?://(www\.)?"
     r"(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com"
-    r"|instagram\.com|instagr\.am)"
+    r"|instagram\.com|instagr\.am"
+    r"|youtube\.com|youtu\.be"
+    r"|twitter\.com|x\.com|t\.co)"
     r"\S+",
     re.IGNORECASE,
 )
@@ -68,6 +70,18 @@ def extract_urls(text: str) -> list[str]:
 
 def is_instagram_url(url: str) -> bool:
     return "instagram.com" in url or "instagr.am" in url
+
+
+def is_youtube_url(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
+def downloading_message(url: str) -> str:
+    if is_instagram_url(url):
+        return "Downloading... (Instagram videos may take a bit longer)"
+    if is_youtube_url(url):
+        return "Downloading... (YouTube videos may take a moment)"
+    return "Downloading..."
 
 
 def build_ydl_opts(output_path: str, url: str) -> dict:
@@ -107,7 +121,7 @@ def download_video(url: str, output_path: str) -> tuple[str, dict]:
         p = Path(ydl.prepare_filename(info))
         if not p.exists():
             p = p.with_suffix(".mp4")
-        if is_instagram_url(url):
+        if is_instagram_url(url) or is_youtube_url(url):
             p = Path(reencode_h264(str(p)))
         return str(p), info
 
@@ -128,20 +142,21 @@ def get_audio_duration(path: str) -> float:
         return 0.0
 
 
-def mix_audio_into_video(video_path: str, audio_path: str, volume: int, start_sec: float) -> str:
+def mix_audio_into_video(video_path: str, audio_path: str, volume: int, start_sec: float, loop: bool = False) -> str:
     output_path = video_path.replace(".mp4", "_mixed.mp4")
     vol = volume / 100.0
+    loop_flags = ["-stream_loop", "-1"] if loop else []
     if volume == 100:
         cmd = [
             "ffmpeg", "-y", "-i", video_path,
-            "-ss", str(start_sec), "-i", audio_path,
+            "-ss", str(start_sec), *loop_flags, "-i", audio_path,
             "-map", "0:v", "-map", "1:a",
             "-shortest", "-c:v", "copy", "-c:a", "aac", output_path,
         ]
     else:
         cmd = [
             "ffmpeg", "-y", "-i", video_path,
-            "-ss", str(start_sec), "-i", audio_path,
+            "-ss", str(start_sec), *loop_flags, "-i", audio_path,
             "-filter_complex",
             f"[0:a]volume=1[oa];[1:a]volume={vol}[na];[oa][na]amix=inputs=2:duration=first[aout]",
             "-map", "0:v", "-map", "[aout]",
@@ -192,7 +207,7 @@ def fmt_start(start: float) -> str:
 # Keyboard
 # ---------------------------------------------------------------------------
 
-def build_keyboard(volume: int, start: float, mini_app_url: str | None = None) -> InlineKeyboardMarkup:
+def build_keyboard(volume: int, start: float, loop: bool = False, mini_app_url: str | None = None) -> InlineKeyboardMarkup:
     vi = VOLUME_STEPS.index(volume) if volume in VOLUME_STEPS else VOLUME_STEPS.index(100)
     vd = VOLUME_STEPS[max(0, vi - 1)]
     vu = VOLUME_STEPS[min(len(VOLUME_STEPS) - 1, vi + 1)]
@@ -200,6 +215,8 @@ def build_keyboard(volume: int, start: float, mini_app_url: str | None = None) -
 
     ps = prev_step(start)
     ns = next_step(start)
+
+    loop_label = "🔁 Loop: ON" if loop else "➡️ Loop: OFF"
 
     third_row = (
         [InlineKeyboardButton("🎧 Precise selector", web_app=WebAppInfo(url=mini_app_url))]
@@ -220,6 +237,7 @@ def build_keyboard(volume: int, start: float, mini_app_url: str | None = None) -
             InlineKeyboardButton("+1s", callback_data="start:add1"),
             InlineKeyboardButton(f"⏭ {ns}s", callback_data=f"start:goto:{ns}"),
         ],
+        [InlineKeyboardButton(loop_label, callback_data="toggle_loop")],
         third_row,
         [
             InlineKeyboardButton("🎬 Mix & Send", callback_data="mix"),
@@ -276,6 +294,7 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
         user_data["edit_state"] = "configuring"
 
         volume       = user_data.get("mix_volume", 100)
+        loop         = user_data.get("mix_loop", False)
         mini_app_url = user_data.get("mini_app_url")
 
         total = int(start_sec)
@@ -290,7 +309,7 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
                 await _bot_app.bot.edit_message_reply_markup(
                     chat_id=chat_id,
                     message_id=message_id,
-                    reply_markup=build_keyboard(volume, start_sec, mini_app_url),
+                    reply_markup=build_keyboard(volume, start_sec, loop, mini_app_url),
                 )
                 edited = True
             except Exception as e:
@@ -302,7 +321,7 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
                 await _bot_app.bot.send_message(
                     chat_id=chat_id,
                     text=f"✅ Position set to {pos_str} — adjust volume then Mix & Send:",
-                    reply_markup=build_keyboard(volume, start_sec, None),
+                    reply_markup=build_keyboard(volume, start_sec, loop, None),
                 )
             except Exception as e:
                 logger.error("Failed to send fallback message: %s", e)
@@ -404,14 +423,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data["edit_token"]         = token
     context.user_data["edit_state"]         = "configuring"
     context.user_data["mix_start"]          = 0
+    context.user_data.setdefault("mix_loop", False)
     volume = context.user_data.get("mix_volume", 100)
+    loop   = context.user_data.get("mix_loop", False)
 
     await status.delete()
 
     # Send the keyboard message; we need its message_id to build the Mini App URL
     sent = await update.message.reply_text(
         "🎵 Audio ready! Use the buttons to set start position, or open the Precise Selector:",
-        reply_markup=build_keyboard(volume, 0, None),  # placeholder — updated below
+        reply_markup=build_keyboard(volume, 0, loop, None),  # placeholder — updated below
     )
 
     # Build Mini App URL now that we have the message_id
@@ -427,7 +448,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data["mini_app_url"] = mini_app_url
         context.user_data["keyboard_message_id"] = sent.message_id
         # Edit keyboard to include the Mini App button with the correct URL
-        await sent.edit_reply_markup(build_keyboard(volume, 0, mini_app_url))
+        await sent.edit_reply_markup(build_keyboard(volume, 0, loop, mini_app_url))
 
 
 async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -483,6 +504,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     # --- Handle state changes ---
     start  = context.user_data.get("mix_start", 0)
     volume = context.user_data.get("mix_volume", 100)
+    loop   = context.user_data.get("mix_loop", False)
 
     if data.startswith("vol:"):
         context.user_data["mix_volume"] = int(data.split(":")[1])
@@ -500,9 +522,13 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data["mix_start"] = float(data[len("start:goto:"):])
         start = context.user_data["mix_start"]
 
+    elif data == "toggle_loop":
+        context.user_data["mix_loop"] = not loop
+        loop = context.user_data["mix_loop"]
+
     if data != "mix":
         mini_app_url = context.user_data.get("mini_app_url")
-        await query.edit_message_reply_markup(build_keyboard(volume, start, mini_app_url))
+        await query.edit_message_reply_markup(build_keyboard(volume, start, loop, mini_app_url))
         return
 
     # --- Do the mix ---
@@ -511,6 +537,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     token          = context.user_data.get("edit_token")
     volume         = context.user_data.get("mix_volume", 100)
     start          = context.user_data.get("mix_start", 0)
+    loop           = context.user_data.get("mix_loop", False)
 
     if not video_file_id or not audio_file_id:
         await query.edit_message_text("Session expired. Reply to a video with /edit to start over.")
@@ -532,7 +559,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 audio_path = os.path.join(tmpdir, "audio")
                 await audio_tg.download_to_drive(audio_path)
 
-            mixed_path = mix_audio_into_video(video_path, audio_path, volume, start)
+            mixed_path = mix_audio_into_video(video_path, audio_path, volume, start, loop)
 
             size = os.path.getsize(mixed_path)
             if size > MAX_SIZE_BYTES:
@@ -559,7 +586,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             _cleanup_session(token)
             for key in ("edit_state", "edit_video_file_id", "edit_audio_file_id",
                         "edit_video_duration", "edit_video_width", "edit_video_height",
-                        "edit_token", "mini_app_url", "keyboard_message_id"):
+                        "edit_token", "mini_app_url", "keyboard_message_id", "mix_loop"):
                 context.user_data.pop(key, None)
 
     except subprocess.CalledProcessError as e:
@@ -583,10 +610,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def process_url(update: Update, url: str) -> None:
-    status_msg = await update.message.reply_text(
-        "Downloading... (Instagram videos may take a bit longer)"
-        if is_instagram_url(url) else "Downloading..."
-    )
+    status_msg = await update.message.reply_text(downloading_message(url))
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "video.%(ext)s")

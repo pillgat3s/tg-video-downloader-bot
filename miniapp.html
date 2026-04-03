@@ -244,11 +244,7 @@
       updateUI(); renderWaveform();
     });
 
-    // iOS seek fix: re-assert displayPos every time play starts so iOS can't drift
-    audio.addEventListener('play', () => {
-      audio.currentTime = displayPos;
-      playBtn.textContent = '⏸';
-    });
+    audio.addEventListener('play',  () => { playBtn.textContent = '⏸'; });
     audio.addEventListener('pause', () => { playBtn.textContent = '▶'; });
     audio.addEventListener('ended', () => { playBtn.textContent = '▶'; });
     // While playing, keep displayPos in sync with actual audio
@@ -273,7 +269,13 @@
     canvas.addEventListener('touchend',   () => { waving=false; });
 
     function togglePlay() {
-      audio.paused ? audio.play().catch(e=>setStatus('Playback error: '+e.message,true)) : audio.pause();
+      if (audio.paused) {
+        // Seek before play() — iOS ignores currentTime set in the 'play' event
+        audio.currentTime = displayPos;
+        audio.play().catch(e => setStatus('Playback error: ' + e.message, true));
+      } else {
+        audio.pause();
+      }
     }
 
     // ── Confirm — GET request (avoids CORS preflight issues) ─────────────────
