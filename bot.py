@@ -99,8 +99,8 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
     if "tiktok.com" in url:
         opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
     if is_youtube_url(url):
-        # Use web+web_creator clients for best YouTube/Shorts compatibility
-        opts["extractor_args"] = {"youtube": {"player_client": ["web", "web_creator"]}}
+        # ios client bypasses YouTube bot-detection without needing cookies
+        opts["extractor_args"] = {"youtube": {"player_client": ["ios", "web_creator"]}}
     if is_instagram_url(url) and COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
@@ -634,9 +634,10 @@ async def process_url(update: Update, url: str) -> None:
                 await status_msg.edit_text("Unsupported URL or platform.")
                 return
             except yt_dlp.utils.DownloadError as e:
+                short_err = str(e).split("\n")[0][:200]
                 logger.error("Download error for %s: %s", url, e)
                 await status_msg.edit_text(
-                    "Download failed. The video may be private, deleted, or unavailable."
+                    f"Download failed: {short_err}"
                 )
                 return
 
