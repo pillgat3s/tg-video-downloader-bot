@@ -3,6 +3,7 @@ import os
 import re
 import base64
 import logging
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -93,7 +94,7 @@ def downloading_message(url: str) -> str:
     return "Downloading..."
 
 
-def build_ydl_opts(output_path: str, url: str) -> dict:
+def build_ydl_opts(output_path: str, url: str, yt_cookies_path: str | None = None) -> dict:
     opts = {
         "outtmpl": output_path,
         "format": (
@@ -108,9 +109,10 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
     if "tiktok.com" in url:
         opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
     if is_youtube_url(url):
-        # tv_embedded client bypasses YouTube sign-in/PO-token requirements
         opts["extractor_args"] = {"youtube": {"player_client": ["tv_embedded", "web_creator"]}}
-        if YT_COOKIES_FILE.exists():
+        if yt_cookies_path:
+            opts["cookiefile"] = yt_cookies_path
+        elif YT_COOKIES_FILE.exists():
             opts["cookiefile"] = str(YT_COOKIES_FILE)
     if is_instagram_url(url) and COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
@@ -128,8 +130,8 @@ def reencode_h264(input_path: str) -> str:
     return output_path
 
 
-def download_video(url: str, output_path: str) -> tuple[str, dict]:
-    opts = build_ydl_opts(output_path, url)
+def download_video(url: str, output_path: str, yt_cookies_path: str | None = None) -> tuple[str, dict]:
+    opts = build_ydl_opts(output_path, url, yt_cookies_path)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         p = Path(ydl.prepare_filename(info))
@@ -631,25 +633,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
     for url in urls:
-        await process_url(update, url)
+        await process_url(update, context, url)
 
 
-async def process_url(update: Update, url: str) -> None:
+async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
     status_msg = await update.message.reply_text(downloading_message(url))
+
+    # Write per-user YouTube cookies to a temp file if available
+    yt_cookies_path = None
+    yt_cookies_tmpdir = None
+    if is_youtube_url(url) and context.user_data.get("yt_cookies"):
+        yt_cookies_tmpdir = tempfile.mkdtemp()
+        yt_cookies_path = os.path.join(yt_cookies_tmpdir, "yt_cookies.txt")
+        Path(yt_cookies_path).write_text(context.user_data["yt_cookies"])
+
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "video.%(ext)s")
             try:
-                video_path, info = download_video(url, output_template)
+                video_path, info = download_video(url, output_template, yt_cookies_path)
             except yt_dlp.utils.UnsupportedError:
                 await status_msg.edit_text("Unsupported URL or platform.")
                 return
             except yt_dlp.utils.DownloadError as e:
-                short_err = str(e).split("\n")[0][:200]
+                err_str = str(e)
                 logger.error("Download error for %s: %s", url, e)
-                await status_msg.edit_text(
-                    f"Download failed: {short_err}"
-                )
+                if is_youtube_url(url) and "sign in" in err_str.lower():
+                    await status_msg.edit_text(
+                        "❌ YouTube requires login to download this video.\n\n"
+                        "Use /setcookies to provide your YouTube cookies."
+                    )
+                else:
+                    await status_msg.edit_text(
+                        f"Download failed: {err_str.split(chr(10))[0][:200]}"
+                    )
                 return
 
             size = os.path.getsize(video_path)
@@ -676,6 +693,57 @@ async def process_url(update: Update, url: str) -> None:
     except Exception:
         logger.exception("Unexpected error for %s", url)
         await status_msg.edit_text("An unexpected error occurred. Please try again.")
+    finally:
+        if yt_cookies_tmpdir:
+            shutil.rmtree(yt_cookies_tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# YouTube cookies management
+# ---------------------------------------------------------------------------
+
+SETCOOKIES_TEXT = (
+    "🍪 *How to give me your YouTube cookies:*\n\n"
+    "1\\. Install the *Get cookies\\.txt LOCALLY* extension:\n"
+    "   • [Chrome](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)\n"
+    "   • [Firefox](https://addons.mozilla.org/firefox/addon/get-cookies-txt-locally/)\n\n"
+    "2\\. Go to *youtube\\.com* while logged in\n\n"
+    "3\\. Click the extension → *Export* → save as `cookies.txt`\n\n"
+    "4\\. Send me that file here 👇\n\n"
+    "_Your cookies are stored only for your session and are never shared\\._"
+)
+
+
+async def handle_set_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["waiting_for_yt_cookies"] = True
+    await update.message.reply_text(SETCOOKIES_TEXT, parse_mode="MarkdownV2",
+                                    disable_web_page_preview=True)
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.user_data.get("waiting_for_yt_cookies"):
+        return
+    doc = update.message.document
+    if not doc or not (doc.file_name or "").endswith(".txt"):
+        await update.message.reply_text("Please send a .txt cookies file.")
+        return
+    tg_file = await context.bot.get_file(doc.file_id)
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+        tmp_path = f.name
+    try:
+        await tg_file.download_to_drive(tmp_path)
+        content = Path(tmp_path).read_text(errors="replace")
+    finally:
+        os.unlink(tmp_path)
+    if "youtube.com" not in content and "youtu.be" not in content and "# Netscape" not in content:
+        await update.message.reply_text(
+            "⚠️ That doesn't look like a YouTube cookies file. "
+            "Make sure you exported from youtube.com while logged in."
+        )
+        return
+    context.user_data["yt_cookies"] = content
+    context.user_data.pop("waiting_for_yt_cookies", None)
+    await update.message.reply_text("✅ YouTube cookies saved! Try sending a YouTube link now.")
 
 
 # ---------------------------------------------------------------------------
@@ -691,7 +759,9 @@ def main() -> None:
         .build()
     )
     app.add_handler(CommandHandler("edit", handle_edit))
+    app.add_handler(CommandHandler("setcookies", handle_set_cookies))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio))
+    app.add_handler(MessageHandler(filters.Document.TXT, handle_document))
     app.add_handler(CallbackQueryHandler(handle_mix_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started. Polling...")
