@@ -42,10 +42,20 @@ if _COOKIES_B64 and not COOKIES_FILE.exists():
     except Exception:
         logger.warning("Failed to decode INSTAGRAM_COOKIES — Instagram downloads will likely fail")
 
+YT_COOKIES_FILE = Path("yt_cookies.txt")
+_YT_COOKIES_B64 = os.environ.get("YOUTUBE_COOKIES", "").strip()
+if _YT_COOKIES_B64 and not YT_COOKIES_FILE.exists():
+    try:
+        YT_COOKIES_FILE.write_bytes(base64.b64decode(_YT_COOKIES_B64))
+        logger.info("Wrote yt_cookies.txt from YOUTUBE_COOKIES env var")
+    except Exception:
+        logger.warning("Failed to decode YOUTUBE_COOKIES — YouTube downloads may fail")
+
 URL_PATTERN = re.compile(
     r"https?://(www\.)?"
     r"(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com"
     r"|instagram\.com|instagr\.am"
+    r"|youtube\.com|youtu\.be"
     r"|twitter\.com|x\.com|t\.co)"
     r"\S+",
     re.IGNORECASE,
@@ -72,9 +82,15 @@ def is_instagram_url(url: str) -> bool:
     return "instagram.com" in url or "instagr.am" in url
 
 
+def is_youtube_url(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
 def downloading_message(url: str) -> str:
     if is_instagram_url(url):
         return "Downloading... (Instagram videos may take a bit longer)"
+    if is_youtube_url(url):
+        return "Downloading... (YouTube quality may vary — note that quality won't be great)"
     return "Downloading..."
 
 
@@ -127,7 +143,50 @@ def ensure_telegram_compatible(path: str) -> str:
     return path
 
 
-def download_video(url: str, output_path: str) -> tuple[str, dict]:
+def _download_youtube_pytubefix(url: str, output_dir: str, yt_cookies_path: str | None = None) -> tuple[str, dict]:
+    from pytubefix import YouTube
+    yt = YouTube(url, use_po_token=True)
+
+    video_stream = (
+        yt.streams.filter(only_video=True, file_extension="mp4")
+        .order_by("resolution").desc().first()
+        or yt.streams.filter(only_video=True).order_by("resolution").desc().first()
+    )
+    audio_stream = yt.streams.filter(only_audio=True).order_by("abr").desc().first()
+
+    if video_stream and audio_stream:
+        vpath = video_stream.download(output_path=output_dir, filename="yt_video")
+        apath = audio_stream.download(output_path=output_dir, filename="yt_audio")
+        merged = os.path.join(output_dir, "yt_merged.mp4")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", vpath, "-i", apath,
+             "-c:v", "copy", "-c:a", "aac", "-shortest", merged],
+            check=True, capture_output=True,
+        )
+        path = merged
+    else:
+        stream = (
+            yt.streams.filter(progressive=True, file_extension="mp4")
+            .order_by("resolution").desc().first()
+        )
+        if not stream:
+            raise RuntimeError("No streams available via pytubefix")
+        path = stream.download(output_path=output_dir, filename="yt_video.mp4")
+
+    path = reencode_h264(path)
+    info = {"title": yt.title, "duration": yt.length, "width": None, "height": None}
+    return path, info
+
+
+def download_video(url: str, output_path: str, yt_cookies_path: str | None = None) -> tuple[str, dict]:
+    if is_youtube_url(url):
+        output_dir = str(Path(output_path).parent)
+        try:
+            return _download_youtube_pytubefix(url, output_dir, yt_cookies_path)
+        except Exception as e:
+            logger.warning("pytubefix failed: %s: %s", type(e).__name__, e)
+            raise
+
     opts = build_ydl_opts(output_path, url)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -354,10 +413,11 @@ async def post_init(application: Application) -> None:
     _bot_app = application
 
     await application.bot.set_my_commands([
-        ("audio",    "Add music to a video — reply to a video"),
-        ("stretch",  "Resize a video — reply to a video"),
-        ("settings", "View and adjust your preferences"),
-        ("help",     "Show all commands and info"),
+        ("audio",      "Add music to a video — reply to a video"),
+        ("stretch",    "Resize a video — reply to a video"),
+        ("setcookies", "Set your YouTube cookies for better access"),
+        ("settings",   "View and adjust your preferences"),
+        ("help",       "Show all commands and info"),
     ])
 
     if not MINI_APP_HOST:
@@ -633,7 +693,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     urls = extract_urls(text)
     if not urls:
         await update.message.reply_text(
-            "Please send a TikTok or Instagram URL (one per line for multiple videos)."
+            "Please send a TikTok, Instagram, YouTube, or X/Twitter URL (one per line for multiple videos)."
         )
         return
     for url in urls:
@@ -642,11 +702,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
     status_msg = await update.message.reply_text(downloading_message(url))
+
+    yt_cookies_path = None
+    yt_cookies_tmpdir = None
+    if is_youtube_url(url) and context.user_data.get("yt_cookies"):
+        yt_cookies_tmpdir = tempfile.mkdtemp()
+        yt_cookies_path = os.path.join(yt_cookies_tmpdir, "yt_cookies.txt")
+        Path(yt_cookies_path).write_text(context.user_data["yt_cookies"])
+
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "video.%(ext)s")
             try:
-                video_path, info = download_video(url, output_template)
+                video_path, info = download_video(url, output_template, yt_cookies_path)
             except yt_dlp.utils.UnsupportedError:
                 await status_msg.edit_text("Unsupported URL or platform.")
                 return
@@ -682,6 +750,9 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
     except Exception:
         logger.exception("Unexpected error for %s", url)
         await status_msg.edit_text("An unexpected error occurred. Please try again.")
+    finally:
+        if yt_cookies_tmpdir:
+            shutil.rmtree(yt_cookies_tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -796,16 +867,71 @@ async def handle_stretch_callback(update: Update, context: ContextTypes.DEFAULT_
 
 
 # ---------------------------------------------------------------------------
+# /setcookies — YouTube cookies management
+# ---------------------------------------------------------------------------
+
+SETCOOKIES_TEXT = (
+    "🍪 *How to give me your YouTube cookies:*\n\n"
+    "1\\. Install the *Get cookies\\.txt LOCALLY* extension:\n"
+    "   • [Chrome](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)\n"
+    "   • [Firefox](https://addons.mozilla.org/firefox/addon/get-cookies-txt-locally/)\n\n"
+    "2\\. Go to *youtube\\.com* while logged in\n\n"
+    "3\\. Click the extension → *Export* → save as `cookies.txt`\n\n"
+    "4\\. Send me that file here 👇\n\n"
+    "⚠️ _Cookies are stored only for your session and are never shared\\. "
+    "You'll need to re\\-run /setcookies whenever the bot gets updated or restarted\\._"
+)
+
+
+async def handle_set_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["waiting_for_yt_cookies"] = True
+    await update.message.reply_text(SETCOOKIES_TEXT, parse_mode="MarkdownV2",
+                                    disable_web_page_preview=True)
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.user_data.get("waiting_for_yt_cookies"):
+        return
+    doc = update.message.document
+    if not doc or not (doc.file_name or "").endswith(".txt"):
+        await update.message.reply_text("Please send a .txt cookies file.")
+        return
+    tg_file = await context.bot.get_file(doc.file_id)
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+        tmp_path = f.name
+    try:
+        await tg_file.download_to_drive(tmp_path)
+        content = Path(tmp_path).read_text(errors="replace")
+    finally:
+        os.unlink(tmp_path)
+    if "youtube.com" not in content and "youtu.be" not in content and "# Netscape" not in content:
+        await update.message.reply_text(
+            "⚠️ That doesn't look like a YouTube cookies file. "
+            "Make sure you exported from youtube.com while logged in."
+        )
+        return
+    context.user_data["yt_cookies"] = content
+    context.user_data.pop("waiting_for_yt_cookies", None)
+    await update.message.reply_text(
+        "✅ YouTube cookies saved! Try sending a YouTube link now.\n\n"
+        "⚠️ These are only stored for this session — you'll need to re-run /setcookies "
+        "whenever the bot gets updated or restarted."
+    )
+
+
+# ---------------------------------------------------------------------------
 # /help
 # ---------------------------------------------------------------------------
 
 HELP_TEXT = (
     "📥 *Video Downloader Bot*\n\n"
-    "*Send a link* from TikTok, Instagram, or X/Twitter and I'll download it for you\\.\n\n"
+    "*Send a link* from TikTok, Instagram, YouTube, or X/Twitter and I'll download it for you\\.\n\n"
+    "⚠️ _YouTube downloads work but quality may not be great due to server limitations\\._\n\n"
     "━━━━━━━━━━━━━\n"
     "*Commands*\n\n"
     "/audio — Reply to one of my videos to add music to it\n"
     "/stretch — Reply to one of my videos to resize it \\(9:16, 16:9, 1:1\\)\n"
+    "/setcookies — Provide your YouTube cookies for better access\n"
     "/settings — View and adjust your preferences\n"
     "/help — Show this message"
 )
@@ -878,10 +1004,12 @@ def main() -> None:
         .post_shutdown(post_shutdown)
         .build()
     )
-    app.add_handler(CommandHandler("audio",    handle_audio_cmd))
-    app.add_handler(CommandHandler("stretch",  handle_stretch))
-    app.add_handler(CommandHandler("settings", handle_settings))
-    app.add_handler(CommandHandler("help",     handle_help))
+    app.add_handler(CommandHandler("audio",      handle_audio_cmd))
+    app.add_handler(CommandHandler("stretch",    handle_stretch))
+    app.add_handler(CommandHandler("setcookies", handle_set_cookies))
+    app.add_handler(CommandHandler("settings",   handle_settings))
+    app.add_handler(CommandHandler("help",       handle_help))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio))
     app.add_handler(CallbackQueryHandler(handle_stretch_callback,  pattern=r"^stretch:"))
     app.add_handler(CallbackQueryHandler(handle_settings_callback, pattern=r"^settings:"))
