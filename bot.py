@@ -81,11 +81,8 @@ def downloading_message(url: str) -> str:
 def build_ydl_opts(output_path: str, url: str) -> dict:
     opts = {
         "outtmpl": output_path,
-        "format": (
-            "bestvideo[vcodec^=avc][ext=mp4]+bestaudio[ext=m4a]"
-            "/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-            "/bestvideo+bestaudio/best"
-        ),
+        # No codec restriction — grab the absolute best quality available
+        "format": "bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
         "quiet": False,
         "no_warnings": False,
@@ -95,6 +92,19 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
     if is_instagram_url(url) and COOKIES_FILE.exists():
         opts["cookiefile"] = str(COOKIES_FILE)
     return opts
+
+
+def get_video_codec(path: str) -> str:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True,
+        )
+        return r.stdout.strip()
+    except Exception:
+        return ""
 
 
 def reencode_h264(input_path: str) -> str:
@@ -108,6 +118,15 @@ def reencode_h264(input_path: str) -> str:
     return output_path
 
 
+def ensure_telegram_compatible(path: str) -> str:
+    """Re-encode to H264/AAC if the video codec isn't already H264."""
+    codec = get_video_codec(path)
+    if codec and codec != "h264":
+        logger.info("Re-encoding %s (codec: %s) to H264 for Telegram", path, codec)
+        return reencode_h264(path)
+    return path
+
+
 def download_video(url: str, output_path: str) -> tuple[str, dict]:
     opts = build_ydl_opts(output_path, url)
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -115,8 +134,7 @@ def download_video(url: str, output_path: str) -> tuple[str, dict]:
         p = Path(ydl.prepare_filename(info))
         if not p.exists():
             p = p.with_suffix(".mp4")
-        if is_instagram_url(url):
-            p = Path(reencode_h264(str(p)))
+        p = Path(ensure_telegram_compatible(str(p)))
         return str(p), info
 
 
