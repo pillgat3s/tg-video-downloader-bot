@@ -276,7 +276,7 @@
       audio.paused ? audio.play().catch(e=>setStatus('Playback error: '+e.message,true)) : audio.pause();
     }
 
-    // ── Confirm — POST to bot server, then close ──────────────────────────────
+    // ── Confirm — GET request (avoids CORS preflight issues) ─────────────────
 
     async function doConfirm() {
       audio.pause();
@@ -284,23 +284,22 @@
       confirmBtn.textContent = 'Sending…';
 
       const startSec = Math.round(displayPos * 100) / 100;
-
+      const qs = new URLSearchParams({
+        token,
+        chat_id:    chatId    || '',
+        user_id:    userId    || '',
+        message_id: messageId || '',
+        start_sec:  startSec,
+      });
       try {
-        const res = await fetch('/set-position', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            token,
-            chat_id:    chatId,
-            user_id:    userId,
-            message_id: messageId,
-            start_sec:  startSec,
-          }),
-        });
-        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        const res = await fetch(`/set-position?${qs}`);
+        if (!res.ok) {
+          const msg = await res.text().catch(() => String(res.status));
+          throw new Error(msg);
+        }
         tg.close();
       } catch(e) {
-        setStatus('Failed to confirm — try again.', true);
+        setStatus(`Error: ${e.message}`, true);
         confirmBtn.disabled = false;
         confirmBtn.textContent = '✓ Confirm this position';
         console.error('Confirm error:', e);

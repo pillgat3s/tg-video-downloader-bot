@@ -248,17 +248,17 @@ async def serve_miniapp(request: aio_web.Request) -> aio_web.Response:
 
 
 async def set_position(request: aio_web.Request) -> aio_web.Response:
-    """Called by the Mini App when the user confirms a position."""
+    """Called by the Mini App when the user confirms a position (GET with query params)."""
     try:
-        data       = await request.json()
-        token      = data["token"]
-        chat_id    = int(data["chat_id"])
-        user_id    = int(data["user_id"])
-        message_id = int(data.get("message_id") or 0)
-        start_sec  = round(float(data["start_sec"]), 2)
-    except (KeyError, ValueError, TypeError, json.JSONDecodeError) as e:
-        logger.error("set_position bad request: %s", e)
-        return aio_web.Response(status=400, text="Bad request")
+        q          = request.rel_url.query
+        token      = q["token"]
+        chat_id    = int(q["chat_id"])
+        user_id    = int(q["user_id"])
+        message_id = int(q.get("message_id") or 0)
+        start_sec  = round(float(q["start_sec"]), 2)
+    except (KeyError, ValueError, TypeError) as e:
+        logger.error("set_position bad params: %s", e)
+        return aio_web.Response(status=400, text=f"Bad request: {e}")
 
     if not _bot_app:
         return aio_web.Response(status=503, text="Bot not ready")
@@ -316,7 +316,7 @@ async def post_init(application: Application) -> None:
     aio_app = aio_web.Application()
     aio_app.router.add_get("/audio/{token}", serve_audio)
     aio_app.router.add_get("/miniapp", serve_miniapp)
-    aio_app.router.add_post("/set-position", set_position)
+    aio_app.router.add_get("/set-position", set_position)
     _web_runner = aio_web.AppRunner(aio_app)
     await _web_runner.setup()
     port = int(os.environ.get("PORT", 8080))
