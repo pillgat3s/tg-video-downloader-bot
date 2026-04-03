@@ -135,11 +135,10 @@ def reencode_h264(input_path: str) -> str:
 
 
 def _download_youtube_pytubefix(url: str, output_dir: str) -> tuple[str, dict]:
-    """Try downloading a YouTube video via pytubefix (bypasses GVS PO Token requirement)."""
+    """Try downloading a YouTube video via pytubefix."""
     from pytubefix import YouTube
-    from pytubefix.exceptions import VideoUnavailable
 
-    yt = YouTube(url, use_po_token=True)
+    yt = YouTube(url)
     # Try progressive (pre-muxed) up to 1080p first
     stream = (
         yt.streams.filter(progressive=True, file_extension="mp4")
@@ -182,7 +181,8 @@ def download_video(url: str, output_path: str, yt_cookies_path: str | None = Non
         try:
             return _download_youtube_pytubefix(url, output_dir)
         except Exception as e:
-            logger.warning("pytubefix failed (%s), falling back to yt-dlp", e)
+            logger.warning("pytubefix failed: %s: %s", type(e).__name__, e)
+            raise  # don't fall through to yt-dlp (it can't work without GVS PO tokens)
 
     opts = build_ydl_opts(output_path, url, yt_cookies_path)
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -717,19 +717,12 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             except yt_dlp.utils.UnsupportedError:
                 await status_msg.edit_text("Unsupported URL or platform.")
                 return
-            except yt_dlp.utils.DownloadError as e:
+            except Exception as e:
                 err_str = str(e)
-                logger.error("Download error for %s: %s", url, e)
-                if is_youtube_url(url) and "sign in" in err_str.lower():
-                    await status_msg.edit_text(
-                        "❌ YouTube requires login to download this video.\n\n"
-                        "Use /setcookies to provide your YouTube cookies.\n"
-                        "⚠️ Cookies are session-only and need to be re-set after each bot update."
-                    )
-                else:
-                    await status_msg.edit_text(
-                        f"Download failed: {err_str.split(chr(10))[0][:200]}"
-                    )
+                logger.error("Download error for %s: %s: %s", url, type(e).__name__, e)
+                await status_msg.edit_text(
+                    f"Download failed: {type(e).__name__}: {err_str.split(chr(10))[0][:180]}"
+                )
                 return
 
             size = os.path.getsize(video_path)
