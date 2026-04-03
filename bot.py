@@ -97,16 +97,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def process_url(update: Update, url: str) -> None:
     status_msg = await update.message.reply_text("Downloading...")
 
-    # Warn early if Instagram cookies are missing — saves time
-    if is_instagram_url(url) and not COOKIES_FILE.exists():
-        await status_msg.edit_text(
-            "Instagram downloads require cookies to work from a server.\n\n"
-            "Set the INSTAGRAM_COOKIES environment variable with a base64-encoded "
-            "cookies.txt exported from a logged-in browser session.\n\n"
-            "See README for instructions."
-        )
-        return
-
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "video.%(ext)s")
