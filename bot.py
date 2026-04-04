@@ -1051,6 +1051,47 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def handle_gif(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    animation = update.message.animation
+    status_msg = await update.message.reply_text("Converting GIF to MP4…")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_path  = os.path.join(tmpdir, "input.gif")
+            out_path = os.path.join(tmpdir, "output.mp4")
+            tg_file  = await context.bot.get_file(animation.file_id)
+            await tg_file.download_to_drive(in_path)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", in_path,
+                 "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                 "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+                 "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                 "-an", out_path],
+                check=True, capture_output=True,
+            )
+            size = os.path.getsize(out_path)
+            if size > MAX_SIZE_BYTES:
+                await status_msg.edit_text(
+                    f"Converted file is too large ({size/1024/1024:.1f} MB)."
+                )
+                return
+            await status_msg.edit_text("📤 Sending…")
+            with open(out_path, "rb") as f:
+                await update.message.reply_video(
+                    video=f,
+                    supports_streaming=True,
+                    width=animation.width,
+                    height=animation.height,
+                    duration=animation.duration,
+                    read_timeout=120,
+                    write_timeout=120,
+                )
+            await status_msg.delete()
+    except subprocess.CalledProcessError as e:
+        logger.error("GIF conversion error: %s", e.stderr)
+        await status_msg.edit_text("❌ Failed to convert GIF.")
+    except Exception:
+        logger.exception("GIF handler error")
+        await status_msg.edit_text("❌ An unexpected error occurred.")
 
 
 def main() -> None:
@@ -1067,6 +1108,7 @@ def main() -> None:
     app.add_handler(CommandHandler("setcookies", handle_set_cookies))
     app.add_handler(CommandHandler("settings",   handle_settings))
     app.add_handler(CommandHandler("help",       handle_help))
+    app.add_handler(MessageHandler(filters.ANIMATION, handle_gif))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio))
     app.add_handler(CallbackQueryHandler(handle_stretch_callback,  pattern=r"^stretch:"))
