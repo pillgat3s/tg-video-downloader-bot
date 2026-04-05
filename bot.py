@@ -64,11 +64,13 @@ URL_PATTERN = re.compile(
 VOLUME_STEPS = [10, 25, 50, 75, 100]  # 100 = replace original audio; <100 = mix on top
 START_STEPS  = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240]
 
-# Text overlay options — font names must match fc-match queries (dejavu_fonts nix pkg)
+# Text overlay options
+# Fonts are relative to the repo root (bundled in fonts/)
+_FONTS_DIR = Path(__file__).parent / "fonts"
 TEXT_FONTS = [
-    ("Bold",      "DejaVu Sans:Bold"),
-    ("Monospace", "DejaVu Sans Mono:Bold"),
-    ("Serif",     "DejaVu Serif:Bold"),
+    ("Classic",   str(_FONTS_DIR / "Montserrat-ExtraBold.ttf"), None),         # TikTok-style
+    ("Monospace", None, "DejaVu Sans Mono:Bold"),                               # system font
+    ("Serif",     None, "DejaVu Serif:Bold"),                                   # system font
 ]
 TEXT_COLORS = [
     ("White",  "white"),
@@ -184,15 +186,20 @@ def _wrap_text(text: str, max_chars: int = 22) -> str:
     return "\n".join(lines)
 
 
-def overlay_text(video_path: str, text: str, font_query: str, color: str) -> str:
+def overlay_text(video_path: str, text: str, font_idx: int, color: str) -> str:
     """Burn TikTok-style centred text onto a video."""
-    out_path = video_path.replace(".mp4", "_text.mp4")
-    wrapped  = _wrap_text(text)
-    font_path = _find_font(font_query)
-
-    # Write text to a tmp file so we avoid shell-escaping issues entirely
+    out_path  = video_path.replace(".mp4", "_text.mp4")
+    wrapped   = _wrap_text(text)
     text_file = video_path.replace(".mp4", "_overlay.txt")
     Path(text_file).write_text(wrapped, encoding="utf-8")
+
+    _, bundled_path, fc_query = TEXT_FONTS[font_idx]
+    if bundled_path and Path(bundled_path).exists():
+        font_path = bundled_path
+    elif fc_query:
+        font_path = _find_font(fc_query)
+    else:
+        font_path = None
 
     base = (
         f"drawtext=textfile='{text_file}'"
@@ -1080,9 +1087,9 @@ def build_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
     vi  = VOLUME_STEPS.index(vol) if vol in VOLUME_STEPS else len(VOLUME_STEPS) - 1
     vol_label = "🔇 Replace audio" if vol == 100 else f"🔊 Mix at {vol}%"
 
-    fi         = user_data.get("text_font",  0)
-    ci         = user_data.get("text_color", 0)
-    font_label = TEXT_FONTS[fi][0]
+    fi          = user_data.get("text_font",  0)
+    ci          = user_data.get("text_color", 0)
+    font_label  = TEXT_FONTS[fi][0]
     color_label = TEXT_COLORS[ci][0]
 
     rows = [
@@ -1162,8 +1169,7 @@ async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     video    = msg.reply_to_message.video
     font_idx = context.user_data.get("text_font",  0)
     col_idx  = context.user_data.get("text_color", 0)
-    _, font_query = TEXT_FONTS[font_idx]
-    _, color      = TEXT_COLORS[col_idx]
+    _, color = TEXT_COLORS[col_idx]
 
     status_msg = await msg.reply_text("Adding text…")
     try:
@@ -1171,7 +1177,7 @@ async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             tg_file    = await context.bot.get_file(video.file_id)
             video_path = os.path.join(tmpdir, "video.mp4")
             await tg_file.download_to_drive(video_path)
-            out_path = overlay_text(video_path, text, font_query, color)
+            out_path = overlay_text(video_path, text, font_idx, color)
             size = os.path.getsize(out_path)
             if size > MAX_SIZE_BYTES:
                 await status_msg.edit_text(f"Result is too large ({size/1024/1024:.1f} MB).")
