@@ -68,7 +68,7 @@ START_STEPS  = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240]
 # Fonts are relative to the repo root (bundled in fonts/)
 _FONTS_DIR = Path(__file__).parent / "fonts"
 TEXT_FONTS = [
-    ("Classic",   str(_FONTS_DIR / "Montserrat-ExtraBold.ttf"), None),         # TikTok-style
+    ("Classic",   str(_FONTS_DIR / "TikTokSans-Bold.ttf"), None),              # official TikTok font
     ("Monospace", None, "DejaVu Sans Mono:Bold"),                               # system font
     ("Serif",     None, "DejaVu Serif:Bold"),                                   # system font
 ]
