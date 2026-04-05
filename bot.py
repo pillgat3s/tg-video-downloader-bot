@@ -64,6 +64,31 @@ URL_PATTERN = re.compile(
 VOLUME_STEPS = [10, 25, 50, 75, 100]  # 100 = replace original audio; <100 = mix on top
 START_STEPS  = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240]
 
+# Text overlay options — font names must match fc-match queries (dejavu_fonts nix pkg)
+TEXT_FONTS = [
+    ("Bold",      "DejaVu Sans:Bold"),
+    ("Monospace", "DejaVu Sans Mono:Bold"),
+    ("Serif",     "DejaVu Serif:Bold"),
+]
+TEXT_COLORS = [
+    ("White",  "white"),
+    ("Yellow", "yellow"),
+    ("Pink",   "HotPink"),
+    ("Black",  "black"),
+]
+
+def _find_font(fc_query: str) -> str | None:
+    """Return the font file path for a fontconfig query, or None if unavailable."""
+    try:
+        r = subprocess.run(
+            ["fc-match", "--format=%{file}", fc_query],
+            capture_output=True, text=True, timeout=5,
+        )
+        path = r.stdout.strip()
+        return path if path else None
+    except Exception:
+        return None
+
 # token -> {path: str, tmpdir: TemporaryDirectory, duration: float}
 _audio_sessions: dict[str, dict] = {}
 _web_runner: aio_web.AppRunner | None = None
@@ -141,6 +166,55 @@ def ensure_telegram_compatible(path: str) -> str:
         logger.info("Re-encoding %s (codec: %s) to H264 for Telegram", path, codec)
         return reencode_h264(path)
     return path
+
+
+def _wrap_text(text: str, max_chars: int = 22) -> str:
+    words = text.split()
+    lines, current = [], ""
+    for word in words:
+        if not current:
+            current = word
+        elif len(current) + 1 + len(word) <= max_chars:
+            current += " " + word
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
+
+
+def overlay_text(video_path: str, text: str, font_query: str, color: str) -> str:
+    """Burn TikTok-style centred text onto a video."""
+    out_path = video_path.replace(".mp4", "_text.mp4")
+    wrapped  = _wrap_text(text)
+    font_path = _find_font(font_query)
+
+    # Write text to a tmp file so we avoid shell-escaping issues entirely
+    text_file = video_path.replace(".mp4", "_overlay.txt")
+    Path(text_file).write_text(wrapped, encoding="utf-8")
+
+    base = (
+        f"drawtext=textfile='{text_file}'"
+        f":fontsize=h*0.08"
+        f":fontcolor={color}"
+        f":borderw=4:bordercolor=black@0.85"
+        f":x=(w-text_w)/2:y=(h-text_h)/2"
+        f":line_spacing=8"
+    )
+    if font_path:
+        base += f":fontfile='{font_path}'"
+
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path,
+         "-vf", base,
+         "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+         "-c:a", "copy", out_path],
+        check=True, capture_output=True,
+    )
+    Path(text_file).unlink(missing_ok=True)
+    return out_path
+
 
 
 def _download_youtube_pytubefix(url: str, output_dir: str, yt_cookies_path: str | None = None) -> tuple[str, dict]:
@@ -413,10 +487,11 @@ async def post_init(application: Application) -> None:
     _bot_app = application
 
     await application.bot.set_my_commands([
-        ("audio",    "Add music to a video — reply to a video"),
-        ("stretch",  "Resize a video — reply to a video"),
-        ("settings", "View and adjust your preferences"),
-        ("help",     "Show all commands and info"),
+        ("audio",   "Add music to a video — reply to a video"),
+        ("text",    "Add text to a video — reply to a video"),
+        ("stretch", "Resize a video — reply to a video"),
+        ("settings","View and adjust your preferences"),
+        ("help",    "Show all commands and info"),
     ])
 
     if not MINI_APP_HOST:
@@ -983,6 +1058,7 @@ HELP_TEXT = (
     "━━━━━━━━━━━━━\n"
     "*Commands*\n\n"
     "/audio — Reply to one of my videos to add music to it\n"
+    "/text — Reply to one of my videos to add text to it\n"
     "/stretch — Reply to one of my videos to resize it \\(9:16, 16:9, 1:1\\)\n"
     "/setcookies — Provide your YouTube cookies for better access\n"
     "/settings — View and adjust your preferences\n"
@@ -1003,12 +1079,30 @@ def build_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
     vol = user_data.get("mix_volume", 100)
     vi  = VOLUME_STEPS.index(vol) if vol in VOLUME_STEPS else len(VOLUME_STEPS) - 1
     vol_label = "🔇 Replace audio" if vol == 100 else f"🔊 Mix at {vol}%"
+
+    fi         = user_data.get("text_font",  0)
+    ci         = user_data.get("text_color", 0)
+    font_label = TEXT_FONTS[fi][0]
+    color_label = TEXT_COLORS[ci][0]
+
     rows = [
         [InlineKeyboardButton("🎚 Default mix volume", callback_data="settings:noop")],
         [
             InlineKeyboardButton("◀", callback_data="settings:vol_down"),
             InlineKeyboardButton(vol_label, callback_data="settings:noop"),
             InlineKeyboardButton("▶", callback_data="settings:vol_up"),
+        ],
+        [InlineKeyboardButton("🔤 Text font", callback_data="settings:noop")],
+        [
+            InlineKeyboardButton("◀", callback_data="settings:font_prev"),
+            InlineKeyboardButton(font_label, callback_data="settings:noop"),
+            InlineKeyboardButton("▶", callback_data="settings:font_next"),
+        ],
+        [InlineKeyboardButton("🎨 Text color", callback_data="settings:noop")],
+        [
+            InlineKeyboardButton("◀", callback_data="settings:color_prev"),
+            InlineKeyboardButton(color_label, callback_data="settings:noop"),
+            InlineKeyboardButton("▶", callback_data="settings:color_next"),
         ],
         [InlineKeyboardButton("✅ Done", callback_data="settings:close")],
     ]
@@ -1042,7 +1136,64 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         context.user_data["mix_volume"] = VOLUME_STEPS[max(0, vi - 1)]
     elif action == "vol_up":
         context.user_data["mix_volume"] = VOLUME_STEPS[min(len(VOLUME_STEPS) - 1, vi + 1)]
+
+    fi = context.user_data.get("text_font", 0)
+    ci = context.user_data.get("text_color", 0)
+    if action == "font_prev":
+        context.user_data["text_font"] = (fi - 1) % len(TEXT_FONTS)
+    elif action == "font_next":
+        context.user_data["text_font"] = (fi + 1) % len(TEXT_FONTS)
+    elif action == "color_prev":
+        context.user_data["text_color"] = (ci - 1) % len(TEXT_COLORS)
+    elif action == "color_next":
+        context.user_data["text_color"] = (ci + 1) % len(TEXT_COLORS)
     await query.edit_message_reply_markup(build_settings_keyboard(context.user_data))
+
+
+async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await msg.reply_text("Usage: reply to a video with /text your message here")
+        return
+    if not msg.reply_to_message or not msg.reply_to_message.video:
+        await msg.reply_text("Reply to one of my videos with /text to add text to it.")
+        return
+    video    = msg.reply_to_message.video
+    font_idx = context.user_data.get("text_font",  0)
+    col_idx  = context.user_data.get("text_color", 0)
+    _, font_query = TEXT_FONTS[font_idx]
+    _, color      = TEXT_COLORS[col_idx]
+
+    status_msg = await msg.reply_text("Adding text…")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tg_file    = await context.bot.get_file(video.file_id)
+            video_path = os.path.join(tmpdir, "video.mp4")
+            await tg_file.download_to_drive(video_path)
+            out_path = overlay_text(video_path, text, font_query, color)
+            size = os.path.getsize(out_path)
+            if size > MAX_SIZE_BYTES:
+                await status_msg.edit_text(f"Result is too large ({size/1024/1024:.1f} MB).")
+                return
+            await status_msg.edit_text("📤 Sending…")
+            with open(out_path, "rb") as f:
+                await msg.reply_video(
+                    video=f,
+                    supports_streaming=True,
+                    width=video.width,
+                    height=video.height,
+                    duration=video.duration,
+                    read_timeout=120,
+                    write_timeout=120,
+                )
+            await status_msg.delete()
+    except subprocess.CalledProcessError as e:
+        logger.error("text overlay ffmpeg error: %s", e.stderr)
+        await status_msg.edit_text("❌ Failed to add text.")
+    except Exception:
+        logger.exception("text overlay error")
+        await status_msg.edit_text("❌ An unexpected error occurred.")
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1104,6 +1255,7 @@ def main() -> None:
     )
     app.add_handler(CommandHandler("start",      handle_start))
     app.add_handler(CommandHandler("audio",      handle_audio_cmd))
+    app.add_handler(CommandHandler("text",       handle_text_cmd))
     app.add_handler(CommandHandler("stretch",    handle_stretch))
     app.add_handler(CommandHandler("setcookies", handle_set_cookies))
     app.add_handler(CommandHandler("settings",   handle_settings))
