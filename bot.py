@@ -68,15 +68,22 @@ START_STEPS  = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240]
 # Fonts are relative to the repo root (bundled in fonts/)
 _FONTS_DIR = Path(__file__).parent / "fonts"
 TEXT_FONTS = [
-    ("Classic",   str(_FONTS_DIR / "TikTokSans-Bold.ttf"), None),              # official TikTok font
-    ("Monospace", None, "DejaVu Sans Mono:Bold"),                               # system font
-    ("Serif",     None, "DejaVu Serif:Bold"),                                   # system font
+    ("Classic",    str(_FONTS_DIR / "TikTokSans-Bold.ttf"),      None),  # TikTok Sans Bold (700)
+    ("Heavy",      str(_FONTS_DIR / "TikTokSans-ExtraBold.ttf"), None),  # TikTok Sans ExtraBold (800)
+    ("Monospace",  None, "DejaVu Sans Mono:Bold"),
+    ("Serif",      None, "DejaVu Serif:Bold"),
 ]
 TEXT_COLORS = [
     ("White",  "white"),
     ("Yellow", "yellow"),
     ("Pink",   "HotPink"),
     ("Black",  "black"),
+]
+# Font size as fraction of video height — text is always wrapped to fit width
+TEXT_SIZES = [
+    ("Small",  0.05),
+    ("Medium", 0.07),
+    ("Large",  0.09),
 ]
 
 def _find_font(fc_query: str) -> str | None:
@@ -186,10 +193,23 @@ def _wrap_text(text: str, max_chars: int = 22) -> str:
     return "\n".join(lines)
 
 
-def overlay_text(video_path: str, text: str, font_idx: int, color: str) -> str:
-    """Burn TikTok-style centred text onto a video."""
-    out_path  = video_path.replace(".mp4", "_text.mp4")
-    wrapped   = _wrap_text(text)
+def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx: int = 1) -> str:
+    """Burn TikTok-style centred text onto a video, auto-wrapping to fit width."""
+    out_path = video_path.replace(".mp4", "_text.mp4")
+
+    # Get video dimensions so we can calculate safe wrap width
+    r = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", video_path],
+        capture_output=True, text=True, check=True,
+    )
+    vid_w, vid_h = map(int, r.stdout.strip().split(","))
+    _, size_factor = TEXT_SIZES[size_idx]
+    font_px = vid_h * size_factor
+    # Average TikTok Sans char width ≈ 0.58 × font size; add small safety margin
+    max_chars = max(8, int((vid_w * 0.9) / (font_px * 0.58)))
+
+    wrapped   = _wrap_text(text, max_chars)
     text_file = video_path.replace(".mp4", "_overlay.txt")
     Path(text_file).write_text(wrapped, encoding="utf-8")
 
@@ -203,9 +223,9 @@ def overlay_text(video_path: str, text: str, font_idx: int, color: str) -> str:
 
     base = (
         f"drawtext=textfile='{text_file}'"
-        f":fontsize=h*0.08"
+        f":fontsize={font_px:.1f}"
         f":fontcolor={color}"
-        f":borderw=4:bordercolor=black@0.85"
+        f":borderw=3:bordercolor=black@0.85"
         f":x=(w-text_w)/2:y=(h-text_h)/2"
         f":line_spacing=8"
     )
@@ -497,6 +517,7 @@ async def post_init(application: Application) -> None:
         ("audio",   "Add music to a video — reply to a video"),
         ("text",    "Add text to a video — reply to a video"),
         ("stretch", "Resize a video — reply to a video"),
+        ("crop",    "Remove black borders — reply to a video"),
         ("settings","View and adjust your preferences"),
         ("help",    "Show all commands and info"),
     ])
@@ -1067,6 +1088,7 @@ HELP_TEXT = (
     "/audio — Reply to one of my videos to add music to it\n"
     "/text — Reply to one of my videos to add text to it\n"
     "/stretch — Reply to one of my videos to resize it \\(9:16, 16:9, 1:1\\)\n"
+    "/crop — Reply to one of my videos to remove black borders\n"
     "/setcookies — Provide your YouTube cookies for better access\n"
     "/settings — View and adjust your preferences\n"
     "/help — Show this message"
@@ -1089,8 +1111,10 @@ def build_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
 
     fi          = user_data.get("text_font",  0)
     ci          = user_data.get("text_color", 0)
+    si          = user_data.get("text_size",  1)
     font_label  = TEXT_FONTS[fi][0]
     color_label = TEXT_COLORS[ci][0]
+    size_label  = TEXT_SIZES[si][0]
 
     rows = [
         [InlineKeyboardButton("🎚 Default mix volume", callback_data="settings:noop")],
@@ -1110,6 +1134,12 @@ def build_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton("◀", callback_data="settings:color_prev"),
             InlineKeyboardButton(color_label, callback_data="settings:noop"),
             InlineKeyboardButton("▶", callback_data="settings:color_next"),
+        ],
+        [InlineKeyboardButton("🔡 Text size", callback_data="settings:noop")],
+        [
+            InlineKeyboardButton("◀", callback_data="settings:size_prev"),
+            InlineKeyboardButton(size_label, callback_data="settings:noop"),
+            InlineKeyboardButton("▶", callback_data="settings:size_next"),
         ],
         [InlineKeyboardButton("✅ Done", callback_data="settings:close")],
     ]
@@ -1146,6 +1176,7 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
 
     fi = context.user_data.get("text_font", 0)
     ci = context.user_data.get("text_color", 0)
+    si = context.user_data.get("text_size", 1)
     if action == "font_prev":
         context.user_data["text_font"] = (fi - 1) % len(TEXT_FONTS)
     elif action == "font_next":
@@ -1154,6 +1185,10 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         context.user_data["text_color"] = (ci - 1) % len(TEXT_COLORS)
     elif action == "color_next":
         context.user_data["text_color"] = (ci + 1) % len(TEXT_COLORS)
+    elif action == "size_prev":
+        context.user_data["text_size"] = max(0, si - 1)
+    elif action == "size_next":
+        context.user_data["text_size"] = min(len(TEXT_SIZES) - 1, si + 1)
     await query.edit_message_reply_markup(build_settings_keyboard(context.user_data))
 
 
@@ -1169,6 +1204,7 @@ async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     video    = msg.reply_to_message.video
     font_idx = context.user_data.get("text_font",  0)
     col_idx  = context.user_data.get("text_color", 0)
+    size_idx = context.user_data.get("text_size",  1)
     _, color = TEXT_COLORS[col_idx]
 
     status_msg = await msg.reply_text("Adding text…")
@@ -1177,7 +1213,7 @@ async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             tg_file    = await context.bot.get_file(video.file_id)
             video_path = os.path.join(tmpdir, "video.mp4")
             await tg_file.download_to_drive(video_path)
-            out_path = overlay_text(video_path, text, font_idx, color)
+            out_path = overlay_text(video_path, text, font_idx, color, size_idx)
             size = os.path.getsize(out_path)
             if size > MAX_SIZE_BYTES:
                 await status_msg.edit_text(f"Result is too large ({size/1024/1024:.1f} MB).")
@@ -1199,6 +1235,70 @@ async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await status_msg.edit_text("❌ Failed to add text.")
     except Exception:
         logger.exception("text overlay error")
+        await status_msg.edit_text("❌ An unexpected error occurred.")
+
+
+async def handle_crop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg.reply_to_message or not msg.reply_to_message.video:
+        await msg.reply_text("Reply to one of my videos with /crop to remove black borders.")
+        return
+    video = msg.reply_to_message.video
+    status_msg = await msg.reply_text("Detecting black borders…")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tg_file    = await context.bot.get_file(video.file_id)
+            video_path = os.path.join(tmpdir, "video.mp4")
+            await tg_file.download_to_drive(video_path)
+
+            # Run cropdetect over the whole video to find the tightest crop
+            r = subprocess.run(
+                ["ffmpeg", "-i", video_path, "-vf", "cropdetect=limit=16:round=2:reset=0",
+                 "-f", "null", "-"],
+                capture_output=True, text=True,
+            )
+            crops = [l for l in (r.stdout + r.stderr).splitlines() if "crop=" in l]
+            if not crops:
+                await status_msg.edit_text("No black borders detected.")
+                return
+            # Take the last (most stable) crop value
+            crop_val = crops[-1].split("crop=")[-1].split()[0]
+            cw, ch, cx, cy = map(int, crop_val.split(":"))
+
+            # If crop would remove less than 1% of pixels, skip
+            orig_px = video.width * video.height
+            if cw * ch > orig_px * 0.99:
+                await status_msg.edit_text("No significant black borders found.")
+                return
+
+            await status_msg.edit_text("Cropping…")
+            out_path = os.path.join(tmpdir, "cropped.mp4")
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", video_path,
+                 "-vf", f"crop={cw}:{ch}:{cx}:{cy}",
+                 "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+                 "-c:a", "copy", out_path],
+                check=True, capture_output=True,
+            )
+            size = os.path.getsize(out_path)
+            if size > MAX_SIZE_BYTES:
+                await status_msg.edit_text(f"Cropped video is too large ({size/1024/1024:.1f} MB).")
+                return
+            await status_msg.edit_text("📤 Sending…")
+            with open(out_path, "rb") as f:
+                await msg.reply_video(
+                    video=f,
+                    supports_streaming=True,
+                    width=cw, height=ch,
+                    duration=video.duration,
+                    read_timeout=120, write_timeout=120,
+                )
+            await status_msg.delete()
+    except subprocess.CalledProcessError as e:
+        logger.error("crop error: %s", e.stderr)
+        await status_msg.edit_text("❌ Failed to crop video.")
+    except Exception:
+        logger.exception("crop handler error")
         await status_msg.edit_text("❌ An unexpected error occurred.")
 
 
@@ -1263,6 +1363,7 @@ def main() -> None:
     app.add_handler(CommandHandler("audio",      handle_audio_cmd))
     app.add_handler(CommandHandler("text",       handle_text_cmd))
     app.add_handler(CommandHandler("stretch",    handle_stretch))
+    app.add_handler(CommandHandler("crop",       handle_crop))
     app.add_handler(CommandHandler("setcookies", handle_set_cookies))
     app.add_handler(CommandHandler("settings",   handle_settings))
     app.add_handler(CommandHandler("help",       handle_help))
