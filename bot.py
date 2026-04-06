@@ -523,7 +523,8 @@ async def post_init(application: Application) -> None:
         ("audio",   "Add music to a video — reply to a video"),
         ("text",    "Add text to a video — reply to a video"),
         ("stretch", "Resize a video — reply to a video"),
-        ("crop",    "Remove black borders — reply to a video"),
+        ("crop",     "Remove black borders — reply to a video"),
+        ("getaudio", "Extract audio as MP3 — reply to a video"),
         ("settings","View and adjust your preferences"),
         ("help",    "Show all commands and info"),
     ])
@@ -1095,6 +1096,7 @@ HELP_TEXT = (
     "/text — Reply to one of my videos to add text to it\n"
     "/stretch — Reply to one of my videos to resize it \\(9:16, 16:9, 1:1\\)\n"
     "/crop — Reply to one of my videos to remove black borders\n"
+    "/getaudio — Reply to one of my videos to extract the audio as MP3\n"
     "/setcookies — Provide your YouTube cookies for better access\n"
     "/settings — View and adjust your preferences\n"
     "/help — Show this message"
@@ -1322,6 +1324,45 @@ async def handle_crop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status_msg.edit_text("❌ An unexpected error occurred.")
 
 
+async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not msg.reply_to_message or not msg.reply_to_message.video:
+        await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio as MP3.")
+        return
+    video = msg.reply_to_message.video
+    status_msg = await msg.reply_text("Extracting audio…")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tg_file    = await context.bot.get_file(video.file_id)
+            video_path = os.path.join(tmpdir, "video.mp4")
+            audio_path = os.path.join(tmpdir, "audio.mp3")
+            await tg_file.download_to_drive(video_path)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", video_path,
+                 "-vn", "-acodec", "libmp3lame", "-q:a", "2", audio_path],
+                check=True, capture_output=True,
+            )
+            size = os.path.getsize(audio_path)
+            if size > MAX_SIZE_BYTES:
+                await status_msg.edit_text(f"Audio is too large ({size/1024/1024:.1f} MB).")
+                return
+            await status_msg.edit_text("📤 Sending…")
+            with open(audio_path, "rb") as f:
+                await msg.reply_audio(
+                    audio=f,
+                    duration=video.duration,
+                    read_timeout=120,
+                    write_timeout=120,
+                )
+            await status_msg.delete()
+    except subprocess.CalledProcessError as e:
+        logger.error("getaudio error: %s", e.stderr)
+        await status_msg.edit_text("❌ Failed to extract audio.")
+    except Exception:
+        logger.exception("getaudio handler error")
+        await status_msg.edit_text("❌ An unexpected error occurred.")
+
+
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Send me a link to download or a video you want to edit."
@@ -1384,6 +1425,7 @@ def main() -> None:
     app.add_handler(CommandHandler("text",       handle_text_cmd))
     app.add_handler(CommandHandler("stretch",    handle_stretch))
     app.add_handler(CommandHandler("crop",       handle_crop))
+    app.add_handler(CommandHandler("getaudio",   handle_getaudio))
     app.add_handler(CommandHandler("setcookies", handle_set_cookies))
     app.add_handler(CommandHandler("settings",   handle_settings))
     app.add_handler(CommandHandler("help",       handle_help))
