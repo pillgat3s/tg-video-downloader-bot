@@ -68,10 +68,11 @@ START_STEPS  = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240]
 # Fonts are relative to the repo root (bundled in fonts/)
 _FONTS_DIR = Path(__file__).parent / "fonts"
 TEXT_FONTS = [
-    ("Classic",   str(_FONTS_DIR / "TikTokSans-Bold.ttf"),  None),  # TikTok Sans Bold (700)
-    ("Heavy",     str(_FONTS_DIR / "TikTokSans-Black.ttf"), None),  # TikTok Sans Black (900)
+    ("Classic",  str(_FONTS_DIR / "TikTokSans-SemiBold.ttf"), None),  # wght=600 — matches TikTok default
+    ("Bold",     str(_FONTS_DIR / "TikTokSans-Bold.ttf"),     None),  # wght=700
+    ("Heavy",    str(_FONTS_DIR / "TikTokSans-Black.ttf"),    None),  # wght=900
     ("Monospace", None, "DejaVu Sans Mono:Bold"),
-    ("Serif",     None, "DejaVu Serif:Bold"),
+    ("Serif",    None, "DejaVu Serif:Bold"),
 ]
 TEXT_COLORS = [
     ("White",  "white"),
@@ -241,7 +242,7 @@ def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx
             f"drawtext=textfile='{lf}'"
             f":fontsize={font_px:.1f}"
             f":fontcolor={color}"
-            f":borderw=3:bordercolor={border_color}"
+            f":borderw={max(1, round(font_px * 0.04))}:bordercolor={border_color}"
             f":x=(w-text_w)/2:y={y:.1f}"
         )
         if font_path:
