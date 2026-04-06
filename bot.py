@@ -202,7 +202,6 @@ def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx
     """Burn TikTok-style centred text onto a video, auto-wrapping to fit width."""
     out_path = video_path.replace(".mp4", "_text.mp4")
 
-    # Get video dimensions so we can calculate safe wrap width
     r = subprocess.run(
         ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-of", "csv=p=0", video_path],
@@ -211,12 +210,9 @@ def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx
     vid_w, vid_h = map(int, r.stdout.strip().split(","))
     _, size_factor = TEXT_SIZES[size_idx]
     font_px = vid_h * size_factor
-    # Average TikTok Sans char width ≈ 0.58 × font size; add small safety margin
     max_chars = max(8, int((vid_w * 0.9) / (font_px * 0.58)))
 
-    wrapped   = _wrap_text(text, max_chars)
-    text_file = video_path.replace(".mp4", "_overlay.txt")
-    Path(text_file).write_text(wrapped, encoding="utf-8")
+    lines = _wrap_text(text, max_chars).split("\n")
 
     _, bundled_path, fc_query = TEXT_FONTS[font_idx]
     if bundled_path and Path(bundled_path).exists():
@@ -227,25 +223,40 @@ def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx
         font_path = None
 
     _, border_color = TEXT_BORDER_COLORS[border_idx]
-    base = (
-        f"drawtext=textfile='{text_file}'"
-        f":fontsize={font_px:.1f}"
-        f":fontcolor={color}"
-        f":borderw=3:bordercolor={border_color}"
-        f":x=(w-text_w)/2:y=(h-text_h)/2"
-        f":line_spacing=8"
-    )
-    if font_path:
-        base += f":fontfile='{font_path}'"
+
+    # Render each line as its own drawtext so x=(w-text_w)/2 centers it individually
+    line_h   = font_px * 1.18   # approximate line height for TikTok Sans
+    spacing  = font_px * 0.12   # gap between lines
+    total_h  = len(lines) * line_h + (len(lines) - 1) * spacing
+    start_y  = (vid_h - total_h) / 2
+
+    filters = []
+    line_files = []
+    for i, line in enumerate(lines):
+        lf = video_path.replace(".mp4", f"_line{i}.txt")
+        Path(lf).write_text(line, encoding="utf-8")
+        line_files.append(lf)
+        y = start_y + i * (line_h + spacing)
+        f = (
+            f"drawtext=textfile='{lf}'"
+            f":fontsize={font_px:.1f}"
+            f":fontcolor={color}"
+            f":borderw=3:bordercolor={border_color}"
+            f":x=(w-text_w)/2:y={y:.1f}"
+        )
+        if font_path:
+            f += f":fontfile='{font_path}'"
+        filters.append(f)
 
     subprocess.run(
         ["ffmpeg", "-y", "-i", video_path,
-         "-vf", base,
+         "-vf", ",".join(filters),
          "-c:v", "libx264", "-crf", "23", "-preset", "fast",
          "-c:a", "copy", out_path],
         check=True, capture_output=True,
     )
-    Path(text_file).unlink(missing_ok=True)
+    for lf in line_files:
+        Path(lf).unlink(missing_ok=True)
     return out_path
 
 
