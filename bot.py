@@ -232,7 +232,7 @@ def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx
         f":fontsize={font_px:.1f}"
         f":fontcolor={color}"
         f":borderw=3:bordercolor={border_color}"
-        f":text_align=C:x=w/2:y=(h-text_h)/2"
+        f":x=(w-text_w)/2:y=(h-text_h)/2"
         f":line_spacing=8"
     )
     if font_path:
