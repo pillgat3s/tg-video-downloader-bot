@@ -68,16 +68,21 @@ START_STEPS  = [0, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240]
 # Fonts are relative to the repo root (bundled in fonts/)
 _FONTS_DIR = Path(__file__).parent / "fonts"
 TEXT_FONTS = [
-    ("Classic",    str(_FONTS_DIR / "TikTokSans-Bold.ttf"),      None),  # TikTok Sans Bold (700)
-    ("Heavy",      str(_FONTS_DIR / "TikTokSans-ExtraBold.ttf"), None),  # TikTok Sans ExtraBold (800)
-    ("Monospace",  None, "DejaVu Sans Mono:Bold"),
-    ("Serif",      None, "DejaVu Serif:Bold"),
+    ("Classic",   str(_FONTS_DIR / "TikTokSans-Bold.ttf"),  None),  # TikTok Sans Bold (700)
+    ("Heavy",     str(_FONTS_DIR / "TikTokSans-Black.ttf"), None),  # TikTok Sans Black (900)
+    ("Monospace", None, "DejaVu Sans Mono:Bold"),
+    ("Serif",     None, "DejaVu Serif:Bold"),
 ]
 TEXT_COLORS = [
     ("White",  "white"),
     ("Yellow", "yellow"),
     ("Pink",   "HotPink"),
     ("Black",  "black"),
+]
+TEXT_BORDER_COLORS = [
+    ("Black",  "black@0.85"),
+    ("White",  "white@0.85"),
+    ("None",   "black@0.0"),
 ]
 # Font size as fraction of video height — text is always wrapped to fit width
 TEXT_SIZES = [
@@ -193,7 +198,7 @@ def _wrap_text(text: str, max_chars: int = 22) -> str:
     return "\n".join(lines)
 
 
-def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx: int = 1) -> str:
+def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx: int = 1, border_idx: int = 0) -> str:
     """Burn TikTok-style centred text onto a video, auto-wrapping to fit width."""
     out_path = video_path.replace(".mp4", "_text.mp4")
 
@@ -221,12 +226,13 @@ def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx
     else:
         font_path = None
 
+    _, border_color = TEXT_BORDER_COLORS[border_idx]
     base = (
         f"drawtext=textfile='{text_file}'"
         f":fontsize={font_px:.1f}"
         f":fontcolor={color}"
-        f":borderw=3:bordercolor=black@0.85"
-        f":x=(w-text_w)/2:y=(h-text_h)/2"
+        f":borderw=3:bordercolor={border_color}"
+        f":text_align=C:x=w/2:y=(h-text_h)/2"
         f":line_spacing=8"
     )
     if font_path:
@@ -1109,12 +1115,14 @@ def build_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
     vi  = VOLUME_STEPS.index(vol) if vol in VOLUME_STEPS else len(VOLUME_STEPS) - 1
     vol_label = "🔇 Replace audio" if vol == 100 else f"🔊 Mix at {vol}%"
 
-    fi          = user_data.get("text_font",  0)
-    ci          = user_data.get("text_color", 0)
-    si          = user_data.get("text_size",  1)
-    font_label  = TEXT_FONTS[fi][0]
-    color_label = TEXT_COLORS[ci][0]
-    size_label  = TEXT_SIZES[si][0]
+    fi          = user_data.get("text_font",   0)
+    ci          = user_data.get("text_color",  0)
+    si          = user_data.get("text_size",   1)
+    bi          = user_data.get("text_border", 0)
+    font_label   = TEXT_FONTS[fi][0]
+    color_label  = TEXT_COLORS[ci][0]
+    size_label   = TEXT_SIZES[si][0]
+    border_label = TEXT_BORDER_COLORS[bi][0]
 
     rows = [
         [InlineKeyboardButton("🎚 Default mix volume", callback_data="settings:noop")],
@@ -1134,6 +1142,12 @@ def build_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton("◀", callback_data="settings:color_prev"),
             InlineKeyboardButton(color_label, callback_data="settings:noop"),
             InlineKeyboardButton("▶", callback_data="settings:color_next"),
+        ],
+        [InlineKeyboardButton("🖊 Text border", callback_data="settings:noop")],
+        [
+            InlineKeyboardButton("◀", callback_data="settings:border_prev"),
+            InlineKeyboardButton(border_label, callback_data="settings:noop"),
+            InlineKeyboardButton("▶", callback_data="settings:border_next"),
         ],
         [InlineKeyboardButton("🔡 Text size", callback_data="settings:noop")],
         [
@@ -1176,7 +1190,8 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
 
     fi = context.user_data.get("text_font", 0)
     ci = context.user_data.get("text_color", 0)
-    si = context.user_data.get("text_size", 1)
+    si = context.user_data.get("text_size",   1)
+    bi = context.user_data.get("text_border", 0)
     if action == "font_prev":
         context.user_data["text_font"] = (fi - 1) % len(TEXT_FONTS)
     elif action == "font_next":
@@ -1185,6 +1200,10 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         context.user_data["text_color"] = (ci - 1) % len(TEXT_COLORS)
     elif action == "color_next":
         context.user_data["text_color"] = (ci + 1) % len(TEXT_COLORS)
+    elif action == "border_prev":
+        context.user_data["text_border"] = (bi - 1) % len(TEXT_BORDER_COLORS)
+    elif action == "border_next":
+        context.user_data["text_border"] = (bi + 1) % len(TEXT_BORDER_COLORS)
     elif action == "size_prev":
         context.user_data["text_size"] = max(0, si - 1)
     elif action == "size_next":
@@ -1202,9 +1221,10 @@ async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await msg.reply_text("Reply to one of my videos with /text to add text to it.")
         return
     video    = msg.reply_to_message.video
-    font_idx = context.user_data.get("text_font",  0)
-    col_idx  = context.user_data.get("text_color", 0)
-    size_idx = context.user_data.get("text_size",  1)
+    font_idx   = context.user_data.get("text_font",   0)
+    col_idx    = context.user_data.get("text_color",  0)
+    size_idx   = context.user_data.get("text_size",   1)
+    border_idx = context.user_data.get("text_border", 0)
     _, color = TEXT_COLORS[col_idx]
 
     status_msg = await msg.reply_text("Adding text…")
@@ -1213,7 +1233,7 @@ async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             tg_file    = await context.bot.get_file(video.file_id)
             video_path = os.path.join(tmpdir, "video.mp4")
             await tg_file.download_to_drive(video_path)
-            out_path = overlay_text(video_path, text, font_idx, color, size_idx)
+            out_path = overlay_text(video_path, text, font_idx, color, size_idx, border_idx)
             size = os.path.getsize(out_path)
             if size > MAX_SIZE_BYTES:
                 await status_msg.edit_text(f"Result is too large ({size/1024/1024:.1f} MB).")
