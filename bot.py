@@ -1399,7 +1399,15 @@ async def _is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return member.status in ("administrator", "creator")
 
 
+def _command_targets_me(context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> bool:
+    """Return False if a @username arg is present and doesn't match this bot."""
+    if args and args[0].startswith("@"):
+        return args[0].lstrip("@").lower() == context.bot.username.lower()
+    return True
+
+
 async def handle_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _command_targets_me(context, context.args or []): return
     if not await _is_group_admin(update, context):
         await update.message.reply_text("Only group admins can do that.")
         return
@@ -1409,6 +1417,7 @@ async def handle_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def handle_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _command_targets_me(context, context.args or []): return
     if not await _is_group_admin(update, context):
         await update.message.reply_text("Only group admins can do that.")
         return
