@@ -1346,22 +1346,49 @@ async def handle_crop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
-    if not msg.reply_to_message or not msg.reply_to_message.video:
+    reply = msg.reply_to_message
+    if not reply:
         await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio as MP3.")
         return
-    video = msg.reply_to_message.video
+    # Accept both video messages and video files sent as documents
+    if reply.video:
+        file_id   = reply.video.file_id
+        duration  = reply.video.duration
+        file_size = reply.video.file_size or 0
+    elif reply.document and (reply.document.mime_type or "").startswith("video/"):
+        file_id   = reply.document.file_id
+        duration  = None
+        file_size = reply.document.file_size or 0
+    else:
+        await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio as MP3.")
+        return
+    # Telegram Bot API getFile limit is 20 MB
+    if file_size > 20 * 1024 * 1024:
+        await msg.reply_text(
+            f"❌ This video is too large ({file_size / 1024 / 1024:.0f} MB) to extract audio from.\n"
+            "Telegram limits file downloads to 20 MB."
+        )
+        return
     status_msg = await msg.reply_text("Extracting audio…")
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            tg_file    = await context.bot.get_file(video.file_id)
+            tg_file    = await context.bot.get_file(file_id)
             video_path = os.path.join(tmpdir, "video.mp4")
             audio_path = os.path.join(tmpdir, "audio.mp3")
             await tg_file.download_to_drive(video_path)
-            subprocess.run(
+            result = subprocess.run(
                 ["ffmpeg", "-y", "-i", video_path,
                  "-vn", "-acodec", "libmp3lame", "-q:a", "2", audio_path],
-                check=True, capture_output=True,
+                capture_output=True,
             )
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="replace")
+                logger.error("getaudio ffmpeg error: %s", stderr)
+                if "does not contain any stream" in stderr or "Output file #0 does not contain" in stderr:
+                    await status_msg.edit_text("❌ This video has no audio track.")
+                else:
+                    await status_msg.edit_text("❌ Failed to extract audio.")
+                return
             size = os.path.getsize(audio_path)
             if size > MAX_SIZE_BYTES:
                 await status_msg.edit_text(f"Audio is too large ({size/1024/1024:.1f} MB).")
@@ -1370,14 +1397,11 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             with open(audio_path, "rb") as f:
                 await msg.reply_audio(
                     audio=f,
-                    duration=video.duration,
+                    duration=duration,
                     read_timeout=120,
                     write_timeout=120,
                 )
             await status_msg.delete()
-    except subprocess.CalledProcessError as e:
-        logger.error("getaudio error: %s", e.stderr)
-        await status_msg.edit_text("❌ Failed to extract audio.")
     except Exception:
         logger.exception("getaudio handler error")
         await status_msg.edit_text("❌ An unexpected error occurred.")
