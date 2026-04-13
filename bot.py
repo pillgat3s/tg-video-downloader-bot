@@ -911,7 +911,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
 
             await status_msg.edit_text("Sending video...")
             with open(video_path, "rb") as f:
-                await update.message.reply_video(
+                sent = await update.message.reply_video(
                     video=f,
                     supports_streaming=True,
                     width=info.get("width"),
@@ -920,6 +920,11 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                     read_timeout=120,
                     write_timeout=120,
                 )
+            # Remember URL so /getaudio can re-download audio-only (bypasses 20 MB limit)
+            urls: dict = context.chat_data.setdefault("video_urls", {})
+            urls[sent.message_id] = url
+            if len(urls) > 100:
+                del urls[min(urls)]
             await status_msg.delete()
 
     except Exception:
@@ -1362,33 +1367,79 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio as MP3.")
         return
-    # Telegram Bot API getFile limit is 20 MB
-    if file_size > 20 * 1024 * 1024:
-        await msg.reply_text(
-            f"❌ This video is too large ({file_size / 1024 / 1024:.0f} MB) to extract audio from.\n"
-            "Telegram limits file downloads to 20 MB."
-        )
-        return
+
+    # Check if we know the original URL for this video (stored when bot sent it).
+    # If so, re-download audio-only via yt-dlp — much faster and bypasses the
+    # 20 MB Telegram getFile limit entirely.
+    original_url = context.chat_data.get("video_urls", {}).get(reply.message_id)
+
     status_msg = await msg.reply_text("Extracting audio…")
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            tg_file    = await context.bot.get_file(file_id)
-            video_path = os.path.join(tmpdir, "video.mp4")
             audio_path = os.path.join(tmpdir, "audio.mp3")
-            await tg_file.download_to_drive(video_path)
-            result = subprocess.run(
-                ["ffmpeg", "-y", "-i", video_path,
-                 "-vn", "-acodec", "libmp3lame", "-q:a", "2", audio_path],
-                capture_output=True,
-            )
-            if result.returncode != 0:
-                stderr = result.stderr.decode("utf-8", errors="replace")
-                logger.error("getaudio ffmpeg error: %s", stderr)
-                if "does not contain any stream" in stderr or "Output file #0 does not contain" in stderr:
-                    await status_msg.edit_text("❌ This video has no audio track.")
-                else:
+
+            if original_url:
+                # Audio-only download — yt-dlp grabs just the audio stream
+                ydl_opts = {
+                    "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
+                    "format": "bestaudio/best",
+                    "postprocessors": [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }],
+                    "quiet": True,
+                    "no_warnings": True,
+                }
+                if "tiktok.com" in original_url:
+                    ydl_opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
+                if is_instagram_url(original_url) and COOKIES_FILE.exists():
+                    ydl_opts["cookiefile"] = str(COOKIES_FILE)
+                yt_cookies = context.user_data.get("yt_cookies")
+                if yt_cookies and is_youtube_url(original_url):
+                    yt_ck_path = os.path.join(tmpdir, "yt_cookies.txt")
+                    Path(yt_ck_path).write_text(yt_cookies)
+                    ydl_opts["cookiefile"] = yt_ck_path
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([original_url])
+                except Exception as e:
+                    logger.warning("getaudio yt-dlp failed (%s), falling back to Telegram download", e)
+                    original_url = None  # fall through to Telegram download below
+
+            if not original_url:
+                # Fall back: download from Telegram (limited to 20 MB)
+                if file_size > 20 * 1024 * 1024:
+                    await status_msg.edit_text(
+                        f"❌ This video is too large ({file_size / 1024 / 1024:.0f} MB).\n"
+                        "Audio extraction is only possible for videos under 20 MB."
+                    )
+                    return
+                tg_file    = await context.bot.get_file(file_id)
+                video_path = os.path.join(tmpdir, "video.mp4")
+                await tg_file.download_to_drive(video_path)
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", video_path,
+                     "-vn", "-acodec", "libmp3lame", "-q:a", "2", audio_path],
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    stderr = result.stderr.decode("utf-8", errors="replace")
+                    logger.error("getaudio ffmpeg error: %s", stderr)
+                    if "Output file #0 does not contain" in stderr:
+                        await status_msg.edit_text("❌ This video has no audio track.")
+                    else:
+                        await status_msg.edit_text("❌ Failed to extract audio.")
+                    return
+
+            # Find the output mp3 (yt-dlp names it audio.mp3 via postprocessor)
+            if not os.path.exists(audio_path):
+                mp3_files = list(Path(tmpdir).glob("*.mp3"))
+                if not mp3_files:
                     await status_msg.edit_text("❌ Failed to extract audio.")
-                return
+                    return
+                audio_path = str(mp3_files[0])
+
             size = os.path.getsize(audio_path)
             if size > MAX_SIZE_BYTES:
                 await status_msg.edit_text(f"Audio is too large ({size/1024/1024:.1f} MB).")
