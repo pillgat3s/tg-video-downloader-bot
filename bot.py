@@ -577,7 +577,7 @@ def _cleanup_session(token: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 async def handle_audio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _chat_is_active(context, update.effective_chat.id): return
+    if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
     if not msg.reply_to_message or not msg.reply_to_message.video:
         await msg.reply_text("Reply to one of my videos with /audio to add music to it.")
@@ -594,7 +594,7 @@ async def handle_audio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _chat_is_active(context, update.effective_chat.id): return
+    if not _chat_is_active(context, update.effective_chat): return
     if context.user_data.get("edit_state") != "waiting_for_audio":
         await update.message.reply_text(
             "Reply to one of my videos with /audio first, then forward an audio file."
@@ -813,7 +813,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _chat_is_active(context, update.effective_chat.id): return
+    if not _chat_is_active(context, update.effective_chat): return
     text = update.message.text or ""
 
     if context.user_data.get("waiting_for_stretch_ratio"):
@@ -974,7 +974,7 @@ def build_stretch_keyboard() -> InlineKeyboardMarkup:
 
 
 async def handle_stretch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _chat_is_active(context, update.effective_chat.id): return
+    if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
     if not msg.reply_to_message or not msg.reply_to_message.video:
         await msg.reply_text("Reply to one of my videos with /stretch to resize it.")
@@ -1231,7 +1231,7 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
 
 
 async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _chat_is_active(context, update.effective_chat.id): return
+    if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
     text = " ".join(context.args or []).strip()
     if not text:
@@ -1279,7 +1279,7 @@ async def handle_text_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def handle_crop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _chat_is_active(context, update.effective_chat.id): return
+    if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
     if not msg.reply_to_message or not msg.reply_to_message.video:
         await msg.reply_text("Reply to one of my videos with /crop to remove black borders.")
@@ -1344,7 +1344,7 @@ async def handle_crop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _chat_is_active(context, update.effective_chat.id): return
+    if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
     if not msg.reply_to_message or not msg.reply_to_message.video:
         await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio as MP3.")
@@ -1387,8 +1387,11 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # Per-chat on/off (persisted across restarts)
 # ---------------------------------------------------------------------------
 
-def _chat_is_active(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
-    return chat_id not in context.bot_data.get("disabled_chats", set())
+def _chat_is_active(context: ContextTypes.DEFAULT_TYPE, chat) -> bool:
+    """Always active in private chats; respects on/off toggle in groups."""
+    if getattr(chat, "type", None) == "private":
+        return True
+    return chat.id not in context.bot_data.get("disabled_chats", set())
 
 
 async def _is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -1408,6 +1411,9 @@ def _command_targets_me(context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> 
 
 async def handle_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _command_targets_me(context, context.args or []): return
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("This command only works in group chats.")
+        return
     if not await _is_group_admin(update, context):
         await update.message.reply_text("Only group admins can do that.")
         return
@@ -1418,6 +1424,9 @@ async def handle_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _command_targets_me(context, context.args or []): return
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("This command only works in group chats.")
+        return
     if not await _is_group_admin(update, context):
         await update.message.reply_text("Only group admins can do that.")
         return
@@ -1433,7 +1442,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def handle_gif(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _chat_is_active(context, update.effective_chat.id): return
+    if not _chat_is_active(context, update.effective_chat): return
     animation = update.message.animation
     status_msg = await update.message.reply_text("Converting GIF to MP4…")
     try:
