@@ -1353,7 +1353,7 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     msg = update.message
     reply = msg.reply_to_message
     if not reply:
-        await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio as MP3.")
+        await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio.")
         return
     # Accept both video messages and video files sent as documents
     if reply.video:
@@ -1365,7 +1365,7 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         duration  = None
         file_size = reply.document.file_size or 0
     else:
-        await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio as MP3.")
+        await msg.reply_text("Reply to one of my videos with /getaudio to extract its audio.")
         return
 
     # Check if we know the original URL for this video (stored when bot sent it).
@@ -1376,18 +1376,15 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     status_msg = await msg.reply_text("Extracting audio…")
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            audio_path = os.path.join(tmpdir, "audio.mp3")
+            audio_path = None
 
             if original_url:
-                # Audio-only download — yt-dlp grabs just the audio stream
+                # Audio-only download — yt-dlp grabs just the audio stream in its
+                # native format (m4a for TikTok/Instagram) with no re-encoding.
                 ydl_opts = {
                     "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
                     "format": "bestaudio/best",
-                    "postprocessors": [{
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }],
+                    # No postprocessors — avoid lossy AAC→MP3 transcode
                     "quiet": True,
                     "no_warnings": True,
                 }
@@ -1403,12 +1400,16 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([original_url])
+                    # Find whatever file yt-dlp produced
+                    candidates = [f for f in Path(tmpdir).iterdir() if f.name.startswith("audio.")]
+                    if candidates:
+                        audio_path = str(candidates[0])
                 except Exception as e:
                     logger.warning("getaudio yt-dlp failed (%s), falling back to Telegram download", e)
-                    original_url = None  # fall through to Telegram download below
 
-            if not original_url:
-                # Fall back: download from Telegram (limited to 20 MB)
+            if audio_path is None:
+                # Fall back: download from Telegram, then extract audio with codec copy
+                # (avoids re-encoding; only re-encodes if copy fails)
                 if file_size > 20 * 1024 * 1024:
                     await status_msg.edit_text(
                         f"❌ This video is too large ({file_size / 1024 / 1024:.0f} MB).\n"
@@ -1418,27 +1419,31 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 tg_file    = await context.bot.get_file(file_id)
                 video_path = os.path.join(tmpdir, "video.mp4")
                 await tg_file.download_to_drive(video_path)
+                # Try codec copy first (lossless, instant)
+                copy_path = os.path.join(tmpdir, "audio.m4a")
                 result = subprocess.run(
-                    ["ffmpeg", "-y", "-i", video_path,
-                     "-vn", "-acodec", "libmp3lame", "-q:a", "2", audio_path],
+                    ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "copy", copy_path],
                     capture_output=True,
                 )
-                if result.returncode != 0:
-                    stderr = result.stderr.decode("utf-8", errors="replace")
-                    logger.error("getaudio ffmpeg error: %s", stderr)
-                    if "Output file #0 does not contain" in stderr:
-                        await status_msg.edit_text("❌ This video has no audio track.")
-                    else:
-                        await status_msg.edit_text("❌ Failed to extract audio.")
-                    return
-
-            # Find the output mp3 (yt-dlp names it audio.mp3 via postprocessor)
-            if not os.path.exists(audio_path):
-                mp3_files = list(Path(tmpdir).glob("*.mp3"))
-                if not mp3_files:
-                    await status_msg.edit_text("❌ Failed to extract audio.")
-                    return
-                audio_path = str(mp3_files[0])
+                if result.returncode == 0 and os.path.getsize(copy_path) > 0:
+                    audio_path = copy_path
+                else:
+                    # Fallback re-encode (handles edge cases like opus-in-mp4)
+                    enc_path = os.path.join(tmpdir, "audio.mp3")
+                    result = subprocess.run(
+                        ["ffmpeg", "-y", "-i", video_path,
+                         "-vn", "-acodec", "libmp3lame", "-q:a", "0", enc_path],
+                        capture_output=True,
+                    )
+                    if result.returncode != 0:
+                        stderr = result.stderr.decode("utf-8", errors="replace")
+                        logger.error("getaudio ffmpeg error: %s", stderr)
+                        if "Output file #0 does not contain" in stderr:
+                            await status_msg.edit_text("❌ This video has no audio track.")
+                        else:
+                            await status_msg.edit_text("❌ Failed to extract audio.")
+                        return
+                    audio_path = enc_path
 
             size = os.path.getsize(audio_path)
             if size > MAX_SIZE_BYTES:
