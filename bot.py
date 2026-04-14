@@ -646,9 +646,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         reply_markup=build_keyboard(volume, 0, loop, None, show_loop),  # placeholder — updated below
     )
 
-    # Build Mini App URL now that we have the message_id
+    # Build Mini App URL now that we have the message_id.
+    # web_app InlineKeyboardButton is only allowed in private chats (Telegram API restriction).
     mini_app_url = None
-    if MINI_APP_HOST:
+    if MINI_APP_HOST and update.effective_chat.type == "private":
         chat_id = update.effective_chat.id
         user_id = update.effective_user.id
         mini_app_url = (
