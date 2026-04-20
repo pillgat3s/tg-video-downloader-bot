@@ -129,10 +129,10 @@ def is_youtube_url(url: str) -> bool:
 
 def downloading_message(url: str) -> str:
     if is_instagram_url(url):
-        return "Downloading... (Instagram videos may take a bit longer)"
+        return "Downloadin dis fi yuh... (Instagram videos tek likkle longer, no worry yaself) 📸"
     if is_youtube_url(url):
-        return "Downloading... (YouTube quality may vary — note that quality won't be great)"
-    return "Downloading..."
+        return "Downloadin dis fi yuh... (YouTube quality can vary, mon — nuh expect perfection) 📺"
+    return "Downloadin dis fi yuh... ⬇️"
 
 
 def build_ydl_opts(output_path: str, url: str) -> dict:
@@ -515,7 +515,7 @@ async def set_position(request: aio_web.Request) -> aio_web.Response:
             try:
                 await _bot_app.bot.send_message(
                     chat_id=chat_id,
-                    text=f"✅ Position set to {pos_str} — adjust volume then Mix & Send:",
+                    text=f"✅ Position set to {pos_str} — adjust di volume den Mix & Send, bredda:",
                     reply_markup=build_keyboard(volume, start_sec, loop, None, show_loop),
                 )
             except Exception as e:
@@ -580,7 +580,7 @@ async def handle_audio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
     if not msg.reply_to_message or not msg.reply_to_message.video:
-        await msg.reply_text("Reply to one of my videos with /audio to add music to it.")
+        await msg.reply_text("Reply to one ah mi videos wid /audio fi add some music to it, bredda 🎵")
         return
     video = msg.reply_to_message.video
     context.user_data["edit_video_file_id"]  = video.file_id
@@ -590,23 +590,23 @@ async def handle_audio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data["edit_state"]          = "waiting_for_audio"
     context.user_data.setdefault("mix_volume", 100)
     context.user_data["mix_start"] = 0
-    await msg.reply_text("🎵 Forward me an audio file to mix into this video.")
+    await msg.reply_text("🎵 Forward mi an audio file fi mix inna dis video, ya mon!")
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _chat_is_active(context, update.effective_chat): return
     if context.user_data.get("edit_state") != "waiting_for_audio":
         await update.message.reply_text(
-            "Reply to one of my videos with /audio first, then forward an audio file."
+            "Reply to one ah mi videos wid /audio first, den forward mi di audio file, mon 🎧"
         )
         return
 
     audio = update.message.audio or update.message.voice
     if not audio:
-        await update.message.reply_text("Please send an audio file.")
+        await update.message.reply_text("Send mi di audio file, bredren 🎶")
         return
 
-    status = await update.message.reply_text("⏳ Loading audio...")
+    status = await update.message.reply_text("⏳ Loadin di audio, hol' tight...")
 
     # Clean up any previous session
     _cleanup_session(context.user_data.pop("edit_token", None))
@@ -620,7 +620,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception:
         tmpdir.cleanup()
         logger.exception("Failed to download audio")
-        await status.edit_text("❌ Failed to download audio. Please try again.")
+        await status.edit_text("❌ Couldn't download di audio, bredda. Gimme another try nuh? 🙏")
         return
 
     duration = get_audio_duration(audio_path)
@@ -642,7 +642,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Send the keyboard message; we need its message_id to build the Mini App URL
     sent = await update.message.reply_text(
-        "🎵 Audio ready! Use the buttons to set start position, or open the Precise Selector:",
+        "🎵 Audio ready, ya mon! Use di buttons fi set di start position, or open di Precise Selector:",
         reply_markup=build_keyboard(volume, 0, loop, None, show_loop),  # placeholder — updated below
     )
 
@@ -677,7 +677,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     "edit_video_duration", "edit_video_width", "edit_video_height",
                     "mini_app_url", "keyboard_message_id", "mix_loop", "edit_audio_duration"):
             context.user_data.pop(key, None)
-        await query.edit_message_text("Mix cancelled.")
+        await query.edit_message_text("Mix cancelled, ya mon. No worries! ✌️")
         return
 
     if data == "preview":
@@ -696,7 +696,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     await tg.download_to_drive(audio_path)
                     preview_path = extract_audio_preview(audio_path, start, tmpdir)
                 else:
-                    await query.answer("No audio found.", show_alert=True)
+                    await query.answer("Nuh audio found deh, mon.", show_alert=True)
                     return
                 m, s = divmod(int(start), 60)
                 with open(preview_path, "rb") as f:
@@ -708,7 +708,7 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     )
         except subprocess.CalledProcessError as e:
             logger.error("Preview ffmpeg error: %s", e.stderr)
-            await context.bot.send_message(query.message.chat_id, "❌ Failed to generate preview.")
+            await context.bot.send_message(query.message.chat_id, "❌ Couldn't generate di preview, bredda. Sumting gone wrong wid di audio. 😤")
         except Exception:
             logger.exception("Preview error")
         return
@@ -755,10 +755,10 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     loop           = context.user_data.get("mix_loop", False)
 
     if not video_file_id or not audio_file_id:
-        await query.edit_message_text("Session expired. Reply to a video with /edit to start over.")
+        await query.edit_message_text("Session expired, mon. Reply to a video wid /audio fi start over. 🔄")
         return
 
-    await query.edit_message_text("⏳ Mixing audio, please wait...")
+    await query.edit_message_text("⏳ Mixin di audio, hol' tight bredren...")
 
     session = _audio_sessions.get(token) if token else None
     try:
@@ -779,12 +779,12 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             size = os.path.getsize(mixed_path)
             if size > MAX_SIZE_BYTES:
                 await query.edit_message_text(
-                    f"Mixed video is too large ({size / 1024 / 1024:.1f} MB). "
-                    "Telegram limits uploads to 50 MB."
+                    f"Dis mixed video too big, mon ({size / 1024 / 1024:.1f} MB). "
+                    "Telegram only allow up to 50 MB, ya hear? 😬"
                 )
                 return
 
-            await query.edit_message_text("📤 Sending...")
+            await query.edit_message_text("📤 Sendin it to yuh now...")
             with open(mixed_path, "rb") as f:
                 await context.bot.send_video(
                     chat_id=query.message.chat_id,
@@ -807,10 +807,10 @@ async def handle_mix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     except subprocess.CalledProcessError as e:
         logger.error("ffmpeg error: %s", e.stderr)
-        await query.edit_message_text("❌ Failed to mix audio. Please try again.")
+        await query.edit_message_text("❌ Couldn't mix di audio, bredda. Sumting went wrong. Try again nuh? 😤")
     except Exception:
         logger.exception("Unexpected error during mix")
-        await query.edit_message_text("❌ An unexpected error occurred.")
+        await query.edit_message_text("❌ Sumting unexpected happen deh, mon. No worry yaself — try again! 🙏")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -822,18 +822,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         import re as _re
         m = _re.match(r"^\s*(\d+)\s*[:/]\s*(\d+)\s*$", text)
         if not m:
-            await update.message.reply_text("Invalid format. Send something like 21:9 or 4:3.")
+            await update.message.reply_text("Dat format nuh right, mon. Send sumting like 21:9 or 4:3, ya hear? 🤔")
             return
         w_r, h_r = int(m.group(1)), int(m.group(2))
         if w_r <= 0 or h_r <= 0:
-            await update.message.reply_text("Both numbers must be greater than 0.")
+            await update.message.reply_text("Both numbers haffi be greater than 0, bredda 🔢")
             return
         video_file_id = context.user_data.get("stretch_video_file_id")
         if not video_file_id:
-            await update.message.reply_text("Session expired. Reply to a video with /stretch.")
+            await update.message.reply_text("Session expired, mon. Reply to a video wid /stretch fi start fresh. 🔄")
             return
         label = f"{w_r}:{h_r}"
-        status_msg = await update.message.reply_text(f"⏳ Stretching to {label}…")
+        status_msg = await update.message.reply_text(f"⏳ Stretchin it to {label}… hol' tight!")
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 video_tg   = await context.bot.get_file(video_file_id)
@@ -842,9 +842,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 out_path = stretch_video(video_path, w_r, h_r, label)
                 size = os.path.getsize(out_path)
                 if size > MAX_SIZE_BYTES:
-                    await status_msg.edit_text(f"Stretched video is too large ({size/1024/1024:.1f} MB).")
+                    await status_msg.edit_text(f"Dis stretched video too big, mon ({size/1024/1024:.1f} MB). 😬")
                     return
-                await status_msg.edit_text("📤 Sending…")
+                await status_msg.edit_text("📤 Sendin it to yuh now…")
                 with open(out_path, "rb") as f:
                     await update.message.reply_video(
                         video=f,
@@ -856,10 +856,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await status_msg.delete()
         except subprocess.CalledProcessError as e:
             logger.error("stretch ffmpeg error: %s", e.stderr)
-            await status_msg.edit_text("❌ Failed to stretch video.")
+            await status_msg.edit_text("❌ Couldn't stretch di video, bredda. Sumting nuh right. 😤")
         except Exception:
             logger.exception("custom stretch error")
-            await status_msg.edit_text("❌ An unexpected error occurred.")
+            await status_msg.edit_text("❌ Sumting unexpected happen deh, mon. No worry yaself — try again! 🙏")
         finally:
             for key in ("stretch_video_file_id", "stretch_video_width",
                         "stretch_video_height", "stretch_video_duration"):
@@ -869,7 +869,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     urls = extract_urls(text)
     if not urls:
         await update.message.reply_text(
-            "Please send a TikTok, Instagram, YouTube, or X/Twitter URL (one per line for multiple videos)."
+            "Send mi a TikTok, Instagram, YouTube, or X/Twitter URL nuh, bredren (one per line fi multiple videos) 🔗"
         )
         return
     for url in urls:
@@ -892,25 +892,25 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             try:
                 video_path, info = download_video(url, output_template, yt_cookies_path)
             except yt_dlp.utils.UnsupportedError:
-                await status_msg.edit_text("Unsupported URL or platform.")
+                await status_msg.edit_text("Dis URL or platform nuh supported, mon. Mi cyaan download dat. 🤷")
                 return
             except Exception as e:
                 err_str = str(e)
                 logger.error("Download error for %s: %s: %s", url, type(e).__name__, e)
                 await status_msg.edit_text(
-                    f"Download failed: {type(e).__name__}: {err_str.split(chr(10))[0][:180]}"
+                    f"Download failed, bredda 😞 {type(e).__name__}: {err_str.split(chr(10))[0][:180]}"
                 )
                 return
 
             size = os.path.getsize(video_path)
             if size > MAX_SIZE_BYTES:
                 await status_msg.edit_text(
-                    f"Video is too large ({size / 1024 / 1024:.1f} MB). "
-                    "Telegram limits file uploads to 50 MB."
+                    f"Dis video too big, mon ({size / 1024 / 1024:.1f} MB). "
+                    "Telegram only allow up to 50 MB — nutten mi can do, respect. 🙏"
                 )
                 return
 
-            await status_msg.edit_text("Sending video...")
+            await status_msg.edit_text("Sendin di video to yuh now... 📤")
             with open(video_path, "rb") as f:
                 sent = await update.message.reply_video(
                     video=f,
