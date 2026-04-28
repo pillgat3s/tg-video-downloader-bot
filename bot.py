@@ -532,6 +532,13 @@ async def post_init(application: Application) -> None:
     global _web_runner, _bot_app
     _bot_app = application
 
+    # Restore Instagram cookies from persistence if env var not set
+    if not _COOKIES_B64:
+        ig = application.bot_data.get("ig_cookies")
+        if ig:
+            COOKIES_FILE.write_text(ig)
+            logger.info("Restored cookies.txt from bot_data")
+
     await application.bot.set_my_commands([
         ("audio",   "Add music to a video — reply to a video"),
         ("text",    "Add text to a video — reply to a video"),
@@ -897,9 +904,16 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
             except Exception as e:
                 err_str = str(e)
                 logger.error("Download error for %s: %s: %s", url, type(e).__name__, e)
-                await status_msg.edit_text(
-                    f"Download failed: {type(e).__name__}: {err_str.split(chr(10))[0][:180]}"
-                )
+                err_lower = err_str.lower()
+                if is_instagram_url(url) and any(k in err_lower for k in ("login required", "rate-limit", "not available", "cookies", "checkpoint")):
+                    await status_msg.edit_text(
+                        "❌ Instagram is blocking this download — login or fresh cookies required.\n"
+                        "Use /setigcookies to upload your Instagram cookies and fix this."
+                    )
+                else:
+                    await status_msg.edit_text(
+                        f"Download failed: {type(e).__name__}: {err_str.split(chr(10))[0][:180]}"
+                    )
                 return
 
             size = os.path.getsize(video_path)
@@ -1053,6 +1067,28 @@ async def handle_stretch_callback(update: Update, context: ContextTypes.DEFAULT_
 
 
 # ---------------------------------------------------------------------------
+# /setigcookies — Instagram cookies management
+# ---------------------------------------------------------------------------
+
+SETIGCOOKIES_TEXT = (
+    "🍪 *How to give me your Instagram cookies:*\n\n"
+    "1\\. Install the *Get cookies\\.txt LOCALLY* extension:\n"
+    "   • [Chrome](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)\n"
+    "   • [Firefox](https://addons.mozilla.org/firefox/addon/get-cookies-txt-locally/)\n\n"
+    "2\\. Go to *instagram\\.com* while logged in\n\n"
+    "3\\. Click the extension → *Export* → save as `cookies.txt`\n\n"
+    "4\\. Send me that file here 👇\n\n"
+    "⚠️ _Cookies are stored persistently and survive restarts\\. "
+    "Update them if Instagram starts blocking downloads again\\._"
+)
+
+
+async def handle_set_ig_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["waiting_for_ig_cookies"] = True
+    await update.message.reply_text(SETIGCOOKIES_TEXT, parse_mode="MarkdownV2",
+                                    disable_web_page_preview=True)
+
+
 # /setcookies — YouTube cookies management
 # ---------------------------------------------------------------------------
 
@@ -1076,7 +1112,9 @@ async def handle_set_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.user_data.get("waiting_for_yt_cookies"):
+    waiting_yt = context.user_data.get("waiting_for_yt_cookies")
+    waiting_ig = context.user_data.get("waiting_for_ig_cookies")
+    if not waiting_yt and not waiting_ig:
         return
     doc = update.message.document
     if not doc or not (doc.file_name or "").endswith(".txt"):
@@ -1090,19 +1128,35 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         content = Path(tmp_path).read_text(errors="replace")
     finally:
         os.unlink(tmp_path)
-    if "youtube.com" not in content and "youtu.be" not in content and "# Netscape" not in content:
+
+    if waiting_ig:
+        if "instagram.com" not in content and "# Netscape" not in content:
+            await update.message.reply_text(
+                "⚠️ That doesn't look like an Instagram cookies file. "
+                "Make sure you exported from instagram.com while logged in."
+            )
+            return
+        context.bot_data["ig_cookies"] = content
+        COOKIES_FILE.write_text(content)
+        context.user_data.pop("waiting_for_ig_cookies", None)
         await update.message.reply_text(
-            "⚠️ That doesn't look like a YouTube cookies file. "
-            "Make sure you exported from youtube.com while logged in."
+            "✅ Instagram cookies saved! These are stored persistently and survive restarts.\n"
+            "Try sending an Instagram link now."
         )
-        return
-    context.user_data["yt_cookies"] = content
-    context.user_data.pop("waiting_for_yt_cookies", None)
-    await update.message.reply_text(
-        "✅ YouTube cookies saved! Try sending a YouTube link now.\n\n"
-        "⚠️ These are only stored for this session — you'll need to re-run /setcookies "
-        "whenever the bot gets updated or restarted."
-    )
+    else:
+        if "youtube.com" not in content and "youtu.be" not in content and "# Netscape" not in content:
+            await update.message.reply_text(
+                "⚠️ That doesn't look like a YouTube cookies file. "
+                "Make sure you exported from youtube.com while logged in."
+            )
+            return
+        context.user_data["yt_cookies"] = content
+        context.user_data.pop("waiting_for_yt_cookies", None)
+        await update.message.reply_text(
+            "✅ YouTube cookies saved! Try sending a YouTube link now.\n\n"
+            "⚠️ These are only stored for this session — you'll need to re-run /setcookies "
+            "whenever the bot gets updated or restarted."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1584,7 +1638,8 @@ def main() -> None:
     app.add_handler(CommandHandler("stretch",    handle_stretch))
     app.add_handler(CommandHandler("crop",       handle_crop))
     app.add_handler(CommandHandler("getaudio",   handle_getaudio))
-    app.add_handler(CommandHandler("setcookies", handle_set_cookies))
+    app.add_handler(CommandHandler("setcookies",   handle_set_cookies))
+    app.add_handler(CommandHandler("setigcookies", handle_set_ig_cookies))
     app.add_handler(CommandHandler("settings",   handle_settings))
     app.add_handler(CommandHandler("help",       handle_help))
     app.add_handler(MessageHandler(filters.ANIMATION, handle_gif))
