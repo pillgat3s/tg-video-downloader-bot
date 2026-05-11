@@ -1604,12 +1604,28 @@ def convert_to_sticker(video_path: str, tmpdir: str) -> str:
         "scale=512:512:force_original_aspect_ratio=decrease,"
         "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0"
     )
-    subprocess.run(
-        ["ffmpeg", "-y", "-i", video_path, "-t", "3", "-vf", vf,
-         "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
-         "-b:v", "0", "-crf", "30", "-an", out],
-        check=True, capture_output=True,
+    # Probe actual duration (capped at 3s) to calculate a bitrate that fits
+    # under Telegram's 256 KB video sticker limit.
+    r = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+        capture_output=True, text=True,
     )
+    try:
+        dur = min(float(r.stdout.strip()), 3.0)
+    except Exception:
+        dur = 3.0
+    target_kbps = int(200 * 1024 * 8 / dur / 1000)  # 200 KB budget, well under 256 KB
+    passlog = os.path.join(tmpdir, "passlog")
+    base_cmd = [
+        "ffmpeg", "-y", "-i", video_path, "-t", "3", "-vf", vf,
+        "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+        "-b:v", f"{target_kbps}k", "-passlogfile", passlog, "-an",
+    ]
+    subprocess.run(base_cmd + ["-pass", "1", "-f", "webm", "/dev/null"],
+                   check=True, capture_output=True)
+    subprocess.run(base_cmd + ["-pass", "2", out],
+                   check=True, capture_output=True)
     return out
 
 
