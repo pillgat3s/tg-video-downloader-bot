@@ -53,7 +53,7 @@ if _YT_COOKIES_B64 and not YT_COOKIES_FILE.exists():
         logger.warning("Failed to decode YOUTUBE_COOKIES — YouTube downloads may fail")
 
 URL_PATTERN = re.compile(
-    r"https?://(www\.)?"
+    r"https?://(www\.)?" 
     r"(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com"
     r"|instagram\.com|instagr\.am"
     r"|youtube\.com|youtu\.be"
@@ -416,14 +416,14 @@ def build_keyboard(volume: int, start: float, loop: bool = False, mini_app_url: 
     loop_label = "🔁 Loop: ON" if loop else "➡️ Loop: OFF"
     rows = [
         [
-            InlineKeyboardButton(f"◀ {vd}%", callback_data=f"vol:{vd}"),
+            InlineKeyboardButton(f"◄ {vd}%", callback_data=f"vol:{vd}"),
             InlineKeyboardButton(vol_label, callback_data="noop"),
-            InlineKeyboardButton(f"▶ {vu}%", callback_data=f"vol:{vu}"),
+            InlineKeyboardButton(f"► {vu}%", callback_data=f"vol:{vu}"),
         ],
         [
             InlineKeyboardButton(f"⏮ {ps}s", callback_data=f"start:goto:{ps}"),
             InlineKeyboardButton("−1s", callback_data="start:sub1"),
-            InlineKeyboardButton(f"▶ {fmt_start(start)}", callback_data="noop"),
+            InlineKeyboardButton(f"► {fmt_start(start)}", callback_data="noop"),
             InlineKeyboardButton("+1s", callback_data="start:add1"),
             InlineKeyboardButton(f"⏭ {ns}s", callback_data=f"start:goto:{ns}"),
         ],
@@ -543,8 +543,11 @@ async def post_init(application: Application) -> None:
         ("audio",   "Add music to a video — reply to a video"),
         ("text",    "Add text to a video — reply to a video"),
         ("stretch", "Resize a video — reply to a video"),
-        ("crop",     "Remove black borders — reply to a video"),
-        ("getaudio", "Extract audio as MP3 — reply to a video"),
+        ("crop",    "Remove black borders — reply to a video"),
+        ("gif",     "Convert a video to GIF — reply to a video"),
+        ("sticker", "Convert a video to a Telegram sticker — reply to a video"),
+        ("mp4",     "Convert a GIF to MP4 — reply to a GIF"),
+        ("getaudio","Extract audio — reply to a video"),
         ("settings","View and adjust your preferences"),
         ("help",    "Show all commands and info"),
     ])
@@ -1173,7 +1176,10 @@ HELP_TEXT = (
     "/text — Reply to one of my videos to add text to it\n"
     "/stretch — Reply to one of my videos to resize it \\(9:16, 16:9, 1:1\\)\n"
     "/crop — Reply to one of my videos to remove black borders\n"
-    "/getaudio — Reply to one of my videos to extract the audio as MP3\n"
+    "/gif — Reply to one of my videos to convert it to a GIF\n"
+    "/sticker — Reply to one of my videos to convert it to a Telegram sticker\n"
+    "/mp4 — Reply to a GIF to convert it to a proper video\n"
+    "/getaudio — Reply to one of my videos to extract the audio\n"
     "/setcookies — Provide your YouTube cookies for better access\n"
     "/settings — View and adjust your preferences\n"
     "/help — Show this message"
@@ -1204,35 +1210,35 @@ def build_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
     border_label = TEXT_BORDER_COLORS[bi][0]
 
     rows = [
-        [InlineKeyboardButton("🎚 Default mix volume", callback_data="settings:noop")],
+        [InlineKeyboardButton("🏚 Default mix volume", callback_data="settings:noop")],
         [
-            InlineKeyboardButton("◀", callback_data="settings:vol_down"),
+            InlineKeyboardButton("◄", callback_data="settings:vol_down"),
             InlineKeyboardButton(vol_label, callback_data="settings:noop"),
-            InlineKeyboardButton("▶", callback_data="settings:vol_up"),
+            InlineKeyboardButton("►", callback_data="settings:vol_up"),
         ],
         [InlineKeyboardButton("🔤 Text font", callback_data="settings:noop")],
         [
-            InlineKeyboardButton("◀", callback_data="settings:font_prev"),
+            InlineKeyboardButton("◄", callback_data="settings:font_prev"),
             InlineKeyboardButton(font_label, callback_data="settings:noop"),
-            InlineKeyboardButton("▶", callback_data="settings:font_next"),
+            InlineKeyboardButton("►", callback_data="settings:font_next"),
         ],
         [InlineKeyboardButton("🎨 Text color", callback_data="settings:noop")],
         [
-            InlineKeyboardButton("◀", callback_data="settings:color_prev"),
+            InlineKeyboardButton("◄", callback_data="settings:color_prev"),
             InlineKeyboardButton(color_label, callback_data="settings:noop"),
-            InlineKeyboardButton("▶", callback_data="settings:color_next"),
+            InlineKeyboardButton("►", callback_data="settings:color_next"),
         ],
         [InlineKeyboardButton("🖊 Text border", callback_data="settings:noop")],
         [
-            InlineKeyboardButton("◀", callback_data="settings:border_prev"),
+            InlineKeyboardButton("◄", callback_data="settings:border_prev"),
             InlineKeyboardButton(border_label, callback_data="settings:noop"),
-            InlineKeyboardButton("▶", callback_data="settings:border_next"),
+            InlineKeyboardButton("►", callback_data="settings:border_next"),
         ],
-        [InlineKeyboardButton("🔡 Text size", callback_data="settings:noop")],
+        [InlineKeyboardButton("🕡 Text size", callback_data="settings:noop")],
         [
-            InlineKeyboardButton("◀", callback_data="settings:size_prev"),
+            InlineKeyboardButton("◄", callback_data="settings:size_prev"),
             InlineKeyboardButton(size_label, callback_data="settings:noop"),
-            InlineKeyboardButton("▶", callback_data="settings:size_next"),
+            InlineKeyboardButton("►", callback_data="settings:size_next"),
         ],
         [InlineKeyboardButton("✅ Done", callback_data="settings:close")],
     ]
@@ -1576,10 +1582,118 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def handle_gif(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def convert_to_gif(video_path: str, tmpdir: str, max_width: int = 480, fps: int = 15) -> str:
+    palette = os.path.join(tmpdir, "palette.png")
+    out = os.path.join(tmpdir, "output.gif")
+    vf = f"fps={fps},scale={max_width}:-1:flags=lanczos"
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-vf", f"{vf},palettegen", palette],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-i", palette,
+         "-lavfi", f"{vf}[x];[x][1:v]paletteuse", out],
+        check=True, capture_output=True,
+    )
+    return out
+
+
+def convert_to_sticker(video_path: str, tmpdir: str) -> str:
+    out = os.path.join(tmpdir, "sticker.webm")
+    vf = (
+        "scale=512:512:force_original_aspect_ratio=decrease,"
+        "pad=512:512:(ow-iw)/2:(oh-ih)/2:color=black@0"
+    )
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", video_path, "-t", "3", "-vf", vf,
+         "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+         "-b:v", "0", "-crf", "30", "-an", out],
+        check=True, capture_output=True,
+    )
+    return out
+
+
+async def handle_gif_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _chat_is_active(context, update.effective_chat): return
-    animation = update.message.animation
-    status_msg = await update.message.reply_text("Converting GIF to MP4…")
+    msg = update.message
+    if not msg.reply_to_message or not msg.reply_to_message.video:
+        await msg.reply_text("Reply to one of my videos with /gif to convert it to a GIF.")
+        return
+    video = msg.reply_to_message.video
+    if video.duration and video.duration > 15:
+        await msg.reply_text(
+            f"❌ That video is {video.duration}s long — GIFs get very large past 15 seconds. Try a shorter clip."
+        )
+        return
+    if (video.file_size or 0) > 20 * 1024 * 1024:
+        await msg.reply_text("❌ Video is too large to download (20 MB limit).")
+        return
+    status_msg = await msg.reply_text("⏳ Converting to GIF…")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_path = os.path.join(tmpdir, "input.mp4")
+            tg_file = await context.bot.get_file(video.file_id)
+            await tg_file.download_to_drive(in_path)
+            out_path = convert_to_gif(in_path, tmpdir)
+            size = os.path.getsize(out_path)
+            if size > 50 * 1024 * 1024:
+                await status_msg.edit_text(
+                    f"❌ GIF is too large ({size/1024/1024:.1f} MB). Try a shorter or lower-resolution clip."
+                )
+                return
+            await status_msg.edit_text("📤 Sending…")
+            with open(out_path, "rb") as f:
+                await msg.reply_animation(animation=f, read_timeout=120, write_timeout=120)
+            await status_msg.delete()
+    except subprocess.CalledProcessError as e:
+        logger.error("GIF conversion error: %s", e.stderr)
+        await status_msg.edit_text("❌ Failed to convert video to GIF.")
+    except Exception:
+        logger.exception("gif_cmd handler error")
+        await status_msg.edit_text("❌ An unexpected error occurred.")
+
+
+async def handle_sticker_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _chat_is_active(context, update.effective_chat): return
+    msg = update.message
+    if not msg.reply_to_message or not msg.reply_to_message.video:
+        await msg.reply_text("Reply to one of my videos with /sticker to convert it to a Telegram sticker.")
+        return
+    video = msg.reply_to_message.video
+    if (video.file_size or 0) > 20 * 1024 * 1024:
+        await msg.reply_text("❌ Video is too large to download (20 MB limit).")
+        return
+    status_msg = await msg.reply_text("⏳ Converting to sticker…")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_path = os.path.join(tmpdir, "input.mp4")
+            tg_file = await context.bot.get_file(video.file_id)
+            await tg_file.download_to_drive(in_path)
+            out_path = convert_to_sticker(in_path, tmpdir)
+            await status_msg.edit_text("📤 Sending…")
+            with open(out_path, "rb") as f:
+                await msg.reply_sticker(sticker=f, read_timeout=120, write_timeout=120)
+            await status_msg.delete()
+            await msg.reply_text(
+                "✅ Done! Forward that sticker to @Stickers bot to add it to your sticker set."
+            )
+    except subprocess.CalledProcessError as e:
+        logger.error("Sticker conversion error: %s", e.stderr)
+        await status_msg.edit_text("❌ Failed to convert video to sticker.")
+    except Exception:
+        logger.exception("sticker_cmd handler error")
+        await status_msg.edit_text("❌ An unexpected error occurred.")
+
+
+async def handle_mp4_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _chat_is_active(context, update.effective_chat): return
+    msg = update.message
+    reply = msg.reply_to_message
+    if not reply or not reply.animation:
+        await msg.reply_text("Reply to a GIF with /mp4 to convert it to a proper video.")
+        return
+    animation = reply.animation
+    status_msg = await msg.reply_text("⏳ Converting GIF to MP4…")
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             in_path  = os.path.join(tmpdir, "input.gif")
@@ -1597,12 +1711,12 @@ async def handle_gif(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             size = os.path.getsize(out_path)
             if size > MAX_SIZE_BYTES:
                 await status_msg.edit_text(
-                    f"Converted file is too large ({size/1024/1024:.1f} MB)."
+                    f"❌ Converted file is too large ({size/1024/1024:.1f} MB)."
                 )
                 return
             await status_msg.edit_text("📤 Sending…")
             with open(out_path, "rb") as f:
-                await update.message.reply_video(
+                await msg.reply_video(
                     video=f,
                     supports_streaming=True,
                     width=animation.width,
@@ -1613,10 +1727,10 @@ async def handle_gif(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 )
             await status_msg.delete()
     except subprocess.CalledProcessError as e:
-        logger.error("GIF conversion error: %s", e.stderr)
-        await status_msg.edit_text("❌ Failed to convert GIF.")
+        logger.error("MP4 conversion error: %s", e.stderr)
+        await status_msg.edit_text("❌ Failed to convert GIF to MP4.")
     except Exception:
-        logger.exception("GIF handler error")
+        logger.exception("mp4_cmd handler error")
         await status_msg.edit_text("❌ An unexpected error occurred.")
 
 
@@ -1638,11 +1752,13 @@ def main() -> None:
     app.add_handler(CommandHandler("stretch",    handle_stretch))
     app.add_handler(CommandHandler("crop",       handle_crop))
     app.add_handler(CommandHandler("getaudio",   handle_getaudio))
+    app.add_handler(CommandHandler("gif",        handle_gif_cmd))
+    app.add_handler(CommandHandler("sticker",    handle_sticker_cmd))
+    app.add_handler(CommandHandler("mp4",        handle_mp4_cmd))
     app.add_handler(CommandHandler("setcookies",   handle_set_cookies))
     app.add_handler(CommandHandler("setigcookies", handle_set_ig_cookies))
     app.add_handler(CommandHandler("settings",   handle_settings))
     app.add_handler(CommandHandler("help",       handle_help))
-    app.add_handler(MessageHandler(filters.ANIMATION, handle_gif))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio))
     app.add_handler(CallbackQueryHandler(handle_stretch_callback,  pattern=r"^stretch:"))
