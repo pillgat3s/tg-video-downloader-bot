@@ -53,11 +53,12 @@ if _YT_COOKIES_B64 and not YT_COOKIES_FILE.exists():
         logger.warning("Failed to decode YOUTUBE_COOKIES — YouTube downloads may fail")
 
 URL_PATTERN = re.compile(
-    r"https?://(www\.)?" 
+    r"https?://(www\.)?"
     r"(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com"
     r"|instagram\.com|instagr\.am"
     r"|youtube\.com|youtu\.be"
-    r"|twitter\.com|x\.com|t\.co)"
+    r"|twitter\.com|x\.com|t\.co"
+    r"|facebook\.com|fb\.watch)"
     r"\S+",
     re.IGNORECASE,
 )
