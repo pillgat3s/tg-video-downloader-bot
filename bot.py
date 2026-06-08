@@ -545,9 +545,9 @@ async def post_init(application: Application) -> None:
         ("text",    "Add text to a video — reply to a video"),
         ("stretch", "Resize a video — reply to a video"),
         ("crop",    "Remove black borders — reply to a video"),
-        ("gif",     "Convert a video to GIF — reply to a video"),
+        ("gif",     "Convert a video or sticker to GIF — reply to a video or sticker"),
         ("sticker", "Convert a video to a Telegram sticker — reply to a video"),
-        ("mp4",     "Convert a GIF to MP4 — reply to a GIF"),
+        ("mp4",     "Convert a GIF or sticker to MP4 — reply to a GIF or sticker"),
         ("getaudio","Extract audio — reply to a video"),
         ("settings","View and adjust your preferences"),
         ("help",    "Show all commands and info"),
@@ -1176,9 +1176,9 @@ HELP_TEXT = (
     "/text — Reply to one of mi videos fi add text to it\n"
     "/stretch — Reply to one of mi videos fi resize it \\(9:16, 16:9, 1:1\\)\n"
     "/crop — Reply to one of mi videos fi remove black borders\n"
-    "/gif — Reply to one of mi videos fi convert it to a GIF\n"
+    "/gif — Reply to one of mi videos or a video sticker fi convert it to a GIF\n"
     "/sticker — Reply to one of mi videos fi convert it to a Telegram sticker\n"
-    "/mp4 — Reply to a GIF fi convert it to a proper video\n"
+    "/mp4 — Reply to a GIF or video sticker fi convert it to a proper video\n"
     "/getaudio — Reply to one of mi videos fi extract di audio\n"
     "/setcookies — Give mi yuh YouTube cookies fi better access\n"
     "/settings — View and adjust yuh preferences\n"
@@ -1632,10 +1632,46 @@ def convert_to_sticker(video_path: str, tmpdir: str) -> str:
 async def handle_gif_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
-    if not msg.reply_to_message or not msg.reply_to_message.video:
-        await msg.reply_text("Reply to one ah mi videos wid /gif fi turn it into a GIF, bredren 🇯🇲")
+    reply = msg.reply_to_message
+
+    if reply and reply.sticker:
+        sticker = reply.sticker
+        if sticker.is_animated:
+            await msg.reply_text("❌ Animated stickers (.tgs) can't be converted — only video stickers work, mon.")
+            return
+        if not sticker.is_video:
+            await msg.reply_text("❌ Only video stickers can be converted to GIF, mon.")
+            return
+        if (sticker.file_size or 0) > 20 * 1024 * 1024:
+            await msg.reply_text("❌ Dis sticker too big fi download, mon.")
+            return
+        status_msg = await msg.reply_text("⏳ Turnin di sticker into a GIF, hol' tight bredren…")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                in_path = os.path.join(tmpdir, "input.webm")
+                tg_file = await context.bot.get_file(sticker.file_id)
+                await tg_file.download_to_drive(in_path)
+                out_path = convert_to_gif(in_path, tmpdir)
+                size = os.path.getsize(out_path)
+                if size > 50 * 1024 * 1024:
+                    await status_msg.edit_text("❌ Di GIF too massive, mon. Try a shorter clip.")
+                    return
+                await status_msg.edit_text("📤 Sendin di GIF now…")
+                with open(out_path, "rb") as f:
+                    await msg.reply_animation(animation=f, read_timeout=120, write_timeout=120)
+                await status_msg.delete()
+        except subprocess.CalledProcessError as e:
+            logger.error("GIF conversion error: %s", e.stderr)
+            await status_msg.edit_text("❌ Couldn't convert di sticker to GIF, mon.")
+        except Exception:
+            logger.exception("gif_cmd sticker handler error")
+            await status_msg.edit_text("❌ Sumting unexpected happen, bredren.")
         return
-    video = msg.reply_to_message.video
+
+    if not reply or not reply.video:
+        await msg.reply_text("Reply to one ah mi videos or a video sticker wid /gif, bredren 🇯🇲")
+        return
+    video = reply.video
     if video.duration and video.duration > 15:
         await msg.reply_text(
             f"❌ Dat video {video.duration}s long, mon — GIFs get massive past 15 seconds. Try a shorter clip, bredren."
@@ -1705,9 +1741,56 @@ async def handle_mp4_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not _chat_is_active(context, update.effective_chat): return
     msg = update.message
     reply = msg.reply_to_message
-    if not reply or not reply.animation:
-        await msg.reply_text("Reply to a GIF wid /mp4 fi convert it to a proper video, bredren 🇯🇲")
+    if not reply or (not reply.animation and not reply.sticker):
+        await msg.reply_text("Reply to a GIF or video sticker wid /mp4 fi convert it to a proper video, bredren 🇯🇲")
         return
+
+    if reply.sticker:
+        sticker = reply.sticker
+        if sticker.is_animated:
+            await msg.reply_text("❌ Animated stickers (.tgs) can't be converted — only video stickers work, mon.")
+            return
+        if not sticker.is_video:
+            await msg.reply_text("❌ Only video stickers can be converted to MP4, mon.")
+            return
+        status_msg = await msg.reply_text("⏳ Convertin di sticker to MP4… hol' tight")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                in_path  = os.path.join(tmpdir, "input.webm")
+                out_path = os.path.join(tmpdir, "output.mp4")
+                tg_file  = await context.bot.get_file(sticker.file_id)
+                await tg_file.download_to_drive(in_path)
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", in_path,
+                     "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                     "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+                     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                     "-an", out_path],
+                    check=True, capture_output=True,
+                )
+                size = os.path.getsize(out_path)
+                if size > MAX_SIZE_BYTES:
+                    await status_msg.edit_text(f"❌ Di converted file too big ({size/1024/1024:.1f} MB), mon.")
+                    return
+                await status_msg.edit_text("📤 Sendin di video now…")
+                with open(out_path, "rb") as f:
+                    await msg.reply_video(
+                        video=f,
+                        supports_streaming=True,
+                        width=sticker.width,
+                        height=sticker.height,
+                        read_timeout=120,
+                        write_timeout=120,
+                    )
+                await status_msg.delete()
+        except subprocess.CalledProcessError as e:
+            logger.error("MP4 conversion error: %s", e.stderr)
+            await status_msg.edit_text("❌ Couldn't convert di sticker to MP4, mon.")
+        except Exception:
+            logger.exception("mp4_cmd sticker handler error")
+            await status_msg.edit_text("❌ Sumting unexpected happen, bredren.")
+        return
+
     animation = reply.animation
     status_msg = await msg.reply_text("⏳ Convertin di GIF to MP4… hol' tight")
     try:
