@@ -9,7 +9,6 @@ import tempfile
 import uuid
 from pathlib import Path
 
-import yt_dlp
 from aiohttp import web as aio_web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
@@ -170,7 +169,7 @@ def reencode_h264(input_path: str) -> str:
     subprocess.run(
         ["ffmpeg", "-y", "-i", input_path,
          "-vcodec", "libx264", "-crf", "23", "-preset", "fast",
-         "-acodec", "aac", "-movflags", "+faststart", output_path],
+         "-threads", "2", "-acodec", "aac", "-movflags", "+faststart", output_path],
         check=True, capture_output=True,
     )
     return output_path
@@ -255,7 +254,7 @@ def overlay_text(video_path: str, text: str, font_idx: int, color: str, size_idx
         ["ffmpeg", "-y", "-i", video_path,
          "-vf", ",".join(filters),
          "-c:v", "libx264", "-crf", "23", "-preset", "fast",
-         "-c:a", "copy", out_path],
+         "-threads", "2", "-c:a", "copy", out_path],
         check=True, capture_output=True,
     )
     for lf in line_files:
@@ -300,6 +299,7 @@ def _download_youtube_pytubefix(url: str, output_dir: str, yt_cookies_path: str 
 
 
 def download_video(url: str, output_path: str, yt_cookies_path: str | None = None) -> tuple[str, dict]:
+    import yt_dlp
     if is_youtube_url(url):
         output_dir = str(Path(output_path).parent)
         try:
@@ -362,7 +362,7 @@ def extract_audio_preview(audio_path: str, start_sec: float, tmpdir: str) -> str
     preview_path = os.path.join(tmpdir, "preview.mp3")
     subprocess.run(
         ["ffmpeg", "-y", "-ss", str(start_sec), "-i", audio_path,
-         "-t", "15", "-vn", "-c:a", "libmp3lame", "-q:a", "4", preview_path],
+         "-t", "15", "-vn", "-c:a", "libmp3lame", "-q:a", "4", "-threads", "1", preview_path],
         check=True, capture_output=True,
     )
     return preview_path
@@ -898,6 +898,7 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
         Path(yt_cookies_path).write_text(context.user_data["yt_cookies"])
 
     try:
+        import yt_dlp
         with tempfile.TemporaryDirectory() as tmpdir:
             output_template = os.path.join(tmpdir, "video.%(ext)s")
             try:
@@ -981,7 +982,7 @@ def stretch_video(video_path: str, w_r: int, h_r: int, label: str) -> str:
         ["ffmpeg", "-y", "-i", video_path,
          "-vf", f"scale={new_w}:{new_h},setsar=1",
          "-c:v", "libx264", "-crf", "23", "-preset", "fast",
-         "-c:a", "copy", output_path],
+         "-threads", "2", "-c:a", "copy", output_path],
         check=True, capture_output=True,
     )
     return output_path
@@ -1384,7 +1385,7 @@ async def handle_crop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 ["ffmpeg", "-y", "-i", video_path,
                  "-vf", f"crop={cw}:{ch}:{cx}:{cy}",
                  "-c:v", "libx264", "-crf", "23", "-preset", "fast",
-                 "-c:a", "copy", out_path],
+                 "-threads", "2", "-c:a", "copy", out_path],
                 check=True, capture_output=True,
             )
             size = os.path.getsize(out_path)
@@ -1459,6 +1460,7 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     Path(yt_ck_path).write_text(yt_cookies)
                     ydl_opts["cookiefile"] = yt_ck_path
                 try:
+                    import yt_dlp
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([original_url])
                     # Find whatever file yt-dlp produced
@@ -1493,7 +1495,7 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     enc_path = os.path.join(tmpdir, "audio.mp3")
                     result = subprocess.run(
                         ["ffmpeg", "-y", "-i", video_path,
-                         "-vn", "-acodec", "libmp3lame", "-q:a", "0", enc_path],
+                         "-vn", "-acodec", "libmp3lame", "-q:a", "0", "-threads", "1", enc_path],
                         capture_output=True,
                     )
                     if result.returncode != 0:
@@ -1620,7 +1622,8 @@ def convert_to_sticker(video_path: str, tmpdir: str) -> str:
     base_cmd = [
         "ffmpeg", "-y", "-i", video_path, "-t", "3", "-vf", vf,
         "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
-        "-b:v", f"{target_kbps}k", "-passlogfile", passlog, "-an",
+        "-b:v", f"{target_kbps}k", "-row-mt", "1", "-threads", "2",
+        "-passlogfile", passlog, "-an",
     ]
     subprocess.run(base_cmd + ["-pass", "1", "-f", "webm", "/dev/null"],
                    check=True, capture_output=True)
@@ -1765,7 +1768,7 @@ async def handle_mp4_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                      "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
                      "-c:v", "libx264", "-crf", "23", "-preset", "fast",
                      "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                     "-an", out_path],
+                     "-threads", "2", "-an", out_path],
                     check=True, capture_output=True,
                 )
                 size = os.path.getsize(out_path)
@@ -1804,7 +1807,7 @@ async def handle_mp4_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                  "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
                  "-c:v", "libx264", "-crf", "23", "-preset", "fast",
                  "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                 "-an", out_path],
+                 "-threads", "2", "-an", out_path],
                 check=True, capture_output=True,
             )
             size = os.path.getsize(out_path)
@@ -1841,6 +1844,7 @@ def main() -> None:
         .persistence(persistence)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
+        .drop_pending_updates(True)
         .build()
     )
     app.add_handler(CommandHandler("start",      handle_start))
