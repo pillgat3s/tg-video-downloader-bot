@@ -1845,7 +1845,6 @@ def main() -> None:
         .persistence(persistence)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
-        .drop_pending_updates(True)
         .build()
     )
     app.add_handler(CommandHandler("start",      handle_start))
@@ -1870,7 +1869,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_mix_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started. Polling...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
