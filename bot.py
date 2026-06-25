@@ -1441,12 +1441,9 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             audio_path = None
 
             if original_url:
-                # Audio-only download — yt-dlp grabs just the audio stream in its
-                # native format (m4a for TikTok/Instagram) with no re-encoding.
                 ydl_opts = {
                     "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
                     "format": "bestaudio/best",
-                    # No postprocessors — avoid lossy AAC→MP3 transcode
                     "quiet": True,
                     "no_warnings": True,
                 }
@@ -1507,6 +1504,17 @@ async def handle_getaudio(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             await status_msg.edit_text("❌ Couldn't extract di audio, bredren.")
                         return
                     audio_path = enc_path
+
+            # Convert to MP3 if the source came out in another format (m4a, webm, etc.)
+            if audio_path and not audio_path.endswith(".mp3"):
+                mp3_path = os.path.join(tmpdir, "audio_final.mp3")
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", audio_path,
+                     "-vn", "-acodec", "libmp3lame", "-q:a", "0", "-threads", "1", mp3_path],
+                    capture_output=True,
+                )
+                if result.returncode == 0 and os.path.getsize(mp3_path) > 0:
+                    audio_path = mp3_path
 
             size = os.path.getsize(audio_path)
             if size > MAX_SIZE_BYTES:
