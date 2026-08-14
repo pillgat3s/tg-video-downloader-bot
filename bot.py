@@ -329,6 +329,33 @@ def download_video(url: str, output_path: str, yt_cookies_path: str | None = Non
         return str(p), info
 
 
+def compress_to_limit(video_path: str, tmpdir: str, target_bytes: int = 47 * 1024 * 1024) -> str:
+    """Two-pass encode targeting just under Telegram's 50 MB limit.
+
+    The bitrate is computed from the video's duration so quality is reduced
+    only as much as needed to fit — no more.
+    """
+    out = os.path.join(tmpdir, "compressed.mp4")
+    dur = get_audio_duration(video_path)
+    if dur <= 0:
+        dur = 60.0
+    audio_kbps = 128
+    total_kbps = int(target_bytes * 8 / dur / 1000)
+    video_kbps = max(100, total_kbps - audio_kbps)
+    passlog = os.path.join(tmpdir, "compress_passlog")
+    base = [
+        "ffmpeg", "-y", "-i", video_path,
+        "-c:v", "libx264", "-preset", "fast", "-b:v", f"{video_kbps}k",
+        "-passlogfile", passlog, "-threads", "2",
+    ]
+    subprocess.run(base + ["-pass", "1", "-an", "-f", "mp4", "/dev/null"],
+                   check=True, capture_output=True)
+    subprocess.run(base + ["-pass", "2", "-c:a", "aac", "-b:a", f"{audio_kbps}k",
+                   "-movflags", "+faststart", out],
+                   check=True, capture_output=True)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Audio helpers
 # ---------------------------------------------------------------------------
@@ -942,9 +969,20 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
 
             size = os.path.getsize(video_path)
             if size > MAX_SIZE_BYTES:
+                token = uuid.uuid4().hex[:8]
+                tokens: dict = context.chat_data.setdefault("compress_urls", {})
+                tokens[token] = url
+                if len(tokens) > 20:
+                    del tokens[next(iter(tokens))]
                 await status_msg.edit_text(
-                    f"Di video too big ({size / 1024 / 1024:.1f} MB), mon. "
-                    "Telegram only allows 50 MB uploads."
+                    f"Di video too big ({size / 1024 / 1024:.1f} MB), mon — "
+                    "Telegram only allows 50 MB uploads.\n"
+                    "Yuh waan mi compress it fi fit? Quality only get reduce as "
+                    "much as needed fi get unda di limit, bredren.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🗜 Yes, compress it", callback_data=f"compress:yes:{token}"),
+                        InlineKeyboardButton("❌ No", callback_data=f"compress:no:{token}"),
+                    ]]),
                 )
                 return
 
@@ -972,6 +1010,63 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
     finally:
         if yt_cookies_tmpdir:
             shutil.rmtree(yt_cookies_tmpdir, ignore_errors=True)
+
+
+async def handle_compress_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    try:
+        _, action, token = query.data.split(":", 2)
+    except ValueError:
+        return
+    url = context.chat_data.get("compress_urls", {}).pop(token, None)
+
+    if action == "no":
+        await query.edit_message_text("Aright, mi a skip dis one, bredren.")
+        return
+
+    if not url:
+        await query.edit_message_text("Session expire, mon. Send di link again nuh.")
+        return
+
+    await query.edit_message_text("⏳ Re-downloadin di video, hol' tight bredren…")
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_template = os.path.join(tmpdir, "video.%(ext)s")
+            video_path, info = download_video(url, output_template)
+            await query.edit_message_text(
+                "🗜 Compressin it fi fit unda 50 MB… dis can tek a few minutes, mon."
+            )
+            out_path = compress_to_limit(video_path, tmpdir)
+            size = os.path.getsize(out_path)
+            if size > MAX_SIZE_BYTES:
+                await query.edit_message_text(
+                    f"❌ Still too big afta compression ({size/1024/1024:.1f} MB), mon. "
+                    "Dis video cyaan fit unda Telegram limit."
+                )
+                return
+            await query.edit_message_text("📤 Sendin it now…")
+            with open(out_path, "rb") as f:
+                sent = await context.bot.send_video(
+                    chat_id=query.message.chat_id,
+                    video=f,
+                    supports_streaming=True,
+                    duration=int(info.get("duration") or 0) or None,
+                    read_timeout=300,
+                    write_timeout=300,
+                )
+            # Remember URL so /getaudio can re-download audio-only
+            urls: dict = context.chat_data.setdefault("video_urls", {})
+            urls[sent.message_id] = url
+            if len(urls) > 100:
+                del urls[min(urls)]
+            await query.delete_message()
+    except subprocess.CalledProcessError as e:
+        logger.error("compress ffmpeg error: %s", e.stderr)
+        await query.edit_message_text("❌ Couldn't compress di video, mon.")
+    except Exception:
+        logger.exception("compress error")
+        await query.edit_message_text("❌ Sumting unexpected happen, bredren.")
 
 
 # ---------------------------------------------------------------------------
@@ -1892,6 +1987,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, handle_audio))
     app.add_handler(CallbackQueryHandler(handle_stretch_callback,  pattern=r"^stretch:"))
     app.add_handler(CallbackQueryHandler(handle_settings_callback, pattern=r"^settings:"))
+    app.add_handler(CallbackQueryHandler(handle_compress_callback, pattern=r"^compress:"))
     app.add_handler(CallbackQueryHandler(handle_mix_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot started. Polling...")
