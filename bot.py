@@ -146,8 +146,19 @@ def build_ydl_opts(output_path: str, url: str) -> dict:
     }
     if "tiktok.com" in url:
         opts["extractor_args"] = {"tiktok": {"download_without_watermark": True}}
-    if is_instagram_url(url) and COOKIES_FILE.exists():
-        opts["cookiefile"] = str(COOKIES_FILE)
+    if is_instagram_url(url):
+        # Instagram sessions are tied to the browser they were exported from;
+        # a desktop-Chrome UA keeps the cookie session valid and avoids the
+        # instant login-wall served to unknown clients.
+        opts["http_headers"] = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            )
+        }
+        opts["extractor_retries"] = 3
+        if COOKIES_FILE.exists():
+            opts["cookiefile"] = str(COOKIES_FILE)
     return opts
 
 
@@ -911,10 +922,18 @@ async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: s
                 logger.error("Download error for %s: %s: %s", url, type(e).__name__, e)
                 err_lower = err_str.lower()
                 if is_instagram_url(url) and any(k in err_lower for k in ("login required", "rate-limit", "not available", "cookies", "checkpoint")):
-                    await status_msg.edit_text(
-                        "❌ Instagram a block dis download, mon — login or fresh cookies required.\n"
-                        "Use /setigcookies fi upload yuh Instagram cookies and fix dis."
-                    )
+                    if COOKIES_FILE.exists():
+                        await status_msg.edit_text(
+                            "❌ Instagram reject di download even though cookies set, mon — "
+                            "dem probably expire or di session get logged out.\n"
+                            "Re-export fresh cookies (log inna instagram.com inna yuh browser first) "
+                            "an upload dem again wid /setigcookies, bredren."
+                        )
+                    else:
+                        await status_msg.edit_text(
+                            "❌ Instagram a block dis download, mon — login required.\n"
+                            "Use /setigcookies fi upload yuh Instagram cookies and fix dis."
+                        )
                 else:
                     await status_msg.edit_text(
                         f"Download failed: {type(e).__name__}: {err_str.split(chr(10))[0][:180]}"
