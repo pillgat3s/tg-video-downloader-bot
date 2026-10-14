@@ -425,6 +425,9 @@ def download_tiktok_slideshow(url: str, output_dir: str, seconds_per_image: floa
             image_urls.append(next((u for u in candidates if ".jpeg" in u or ".jpg" in u), candidates[0]))
     if not image_urls:
         raise RuntimeError("Couldn't find any images in this TikTok photo post")
+    if len(image_urls) == 1:
+        # A single photo isn't really a slideshow — hold it long enough to hear the music
+        seconds_per_image = 10.0
     music_url = (item.get("music") or {}).get("playUrl") or None
 
     def fetch(src: str, dest: str) -> None:
