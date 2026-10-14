@@ -319,14 +319,147 @@ def download_video(url: str, output_path: str, yt_cookies_path: str | None = Non
             logger.warning("pytubefix failed: %s: %s", type(e).__name__, e)
             raise
 
+    output_dir = str(Path(output_path).parent)
+    if _is_tiktok_photo_url(url):
+        return download_tiktok_slideshow(url, output_dir)
+
     opts = build_ydl_opts(output_path, url)
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        p = Path(ydl.prepare_filename(info))
-        if not p.exists():
-            p = p.with_suffix(".mp4")
-        p = Path(ensure_telegram_compatible(str(p)))
-        return str(p), info
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            p = Path(ydl.prepare_filename(info))
+            if not p.exists():
+                p = p.with_suffix(".mp4")
+            p = Path(ensure_telegram_compatible(str(p)))
+            return str(p), info
+    except yt_dlp.utils.YoutubeDLError:
+        # Short links (vm.tiktok.com / vt.tiktok.com) can point at a photo post,
+        # which yt-dlp's TikTok extractor doesn't match. Resolve and retry.
+        if "tiktok.com" in url:
+            final_url = _resolve_redirect(url)
+            if _is_tiktok_photo_url(final_url):
+                return download_tiktok_slideshow(final_url, output_dir)
+        raise
+
+
+def _is_tiktok_photo_url(url: str) -> bool:
+    return "tiktok.com" in url and "/photo/" in url
+
+
+def _resolve_redirect(url: str) -> str:
+    import yt_dlp
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            with ydl.urlopen(url) as r:
+                return r.url
+    except Exception:
+        return url
+
+
+def _image_ext(path: str) -> str:
+    with open(path, "rb") as f:
+        head = f.read(12)
+    if head.startswith(b"\xff\xd8"):
+        return ".jpg"
+    if head.startswith(b"\x89PNG"):
+        return ".png"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
+def _slideshow_ffmpeg_cmd(img_paths: list[str], audio_path: str | None, out: str,
+                          seconds_per_image: float) -> list[str]:
+    """Build the ffmpeg command that turns still images (+ optional music) into an MP4.
+
+    Each image is its own looped input and the streams are joined with the
+    concat *filter* rather than the concat demuxer: the demuxer needs every
+    input to share one codec, and TikTok serves a mix of JPEG and WEBP slides.
+    """
+    n = len(img_paths)
+    cmd = ["ffmpeg", "-y"]
+    for p in img_paths:
+        cmd += ["-framerate", "30", "-loop", "1", "-t", f"{seconds_per_image}", "-i", p]
+    if audio_path:
+        cmd += ["-stream_loop", "-1", "-i", audio_path]
+    norm = (
+        "scale=1080:1920:force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p"
+    )
+    chains = "".join(f"[{i}:v]{norm}[v{i}];" for i in range(n))
+    joined = "".join(f"[v{i}]" for i in range(n))
+    cmd += ["-filter_complex", f"{chains}{joined}concat=n={n}:v=1:a=0[v]", "-map", "[v]"]
+    if audio_path:
+        cmd += ["-map", f"{n}:a", "-c:a", "aac", "-shortest"]
+    cmd += ["-c:v", "libx264", "-crf", "23", "-preset", "fast", "-threads", "2",
+            "-movflags", "+faststart", out]
+    return cmd
+
+
+def download_tiktok_slideshow(url: str, output_dir: str, seconds_per_image: float = 3.0) -> tuple[str, dict]:
+    """Render a TikTok photo-mode post (images + music) into an MP4.
+
+    yt-dlp doesn't support these posts (its TikTok extractor only matches
+    /video/ URLs, and even internally only yields the audio track), so we
+    go through its extractor's page fetch — which handles TikTok's anti-bot
+    challenge cookies and browser impersonation — pull the image and music
+    URLs out of the page data ourselves, and build a slideshow with ffmpeg.
+    """
+    import yt_dlp
+    from yt_dlp.networking import Request as YdlRequest
+    from yt_dlp.extractor.tiktok import TikTokIE
+
+    m = re.search(r"/photo/(\d+)", url)
+    video_id = m.group(1) if m else "photo"
+    ydl = yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True})
+    ie = TikTokIE()
+    ie.set_downloader(ydl)
+    item, _status = ie._extract_web_data_and_status(url, video_id)
+    item = item or {}
+
+    image_urls: list[str] = []
+    for img in (item.get("imagePost") or {}).get("images") or []:
+        candidates = [u for u in ((img.get("imageURL") or {}).get("urlList") or []) if u]
+        if candidates:
+            # Prefer a JPEG variant when TikTok offers several encodings
+            image_urls.append(next((u for u in candidates if ".jpeg" in u or ".jpg" in u), candidates[0]))
+    if not image_urls:
+        raise RuntimeError("Couldn't find any images in this TikTok photo post")
+    music_url = (item.get("music") or {}).get("playUrl") or None
+
+    def fetch(src: str, dest: str) -> None:
+        with ydl.urlopen(YdlRequest(src, headers={"Referer": "https://www.tiktok.com/"})) as r, \
+                open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
+
+    img_paths: list[str] = []
+    for i, src in enumerate(image_urls):
+        raw = os.path.join(output_dir, f"slide_{i:03d}")
+        fetch(src, raw)
+        final = raw + _image_ext(raw)
+        os.rename(raw, final)
+        img_paths.append(final)
+
+    audio_path = None
+    if music_url:
+        try:
+            audio_path = os.path.join(output_dir, "music.audio")
+            fetch(music_url, audio_path)
+        except Exception as e:
+            logger.warning("TikTok slideshow: music download failed: %s", e)
+            audio_path = None
+
+    out = os.path.join(output_dir, "slideshow.mp4")
+    subprocess.run(_slideshow_ffmpeg_cmd(img_paths, audio_path, out, seconds_per_image),
+                   check=True, capture_output=True)
+
+    info = {
+        "title": item.get("desc") or "",
+        "duration": int(seconds_per_image * len(img_paths)),
+        "width": 1080,
+        "height": 1920,
+    }
+    return out, info
 
 
 def compress_to_limit(video_path: str, tmpdir: str, target_bytes: int = 47 * 1024 * 1024) -> str:
