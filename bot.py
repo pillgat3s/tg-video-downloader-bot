@@ -368,6 +368,66 @@ def _image_ext(path: str) -> str:
     return ".jpg"
 
 
+def _http_urls(value) -> list[str]:
+    if isinstance(value, list):
+        return [u for u in value if isinstance(u, str) and u.startswith("http")]
+    return []
+
+
+def _find_url_list(obj) -> list[str]:
+    """Find the first http URL list inside one slide's data (web or app API shape)."""
+    if isinstance(obj, dict):
+        for key in ("imageURL", "display_image", "image_url"):
+            sub = obj.get(key)
+            if isinstance(sub, dict):
+                urls = _http_urls(sub.get("urlList")) or _http_urls(sub.get("url_list"))
+                if urls:
+                    return urls
+        urls = _http_urls(obj.get("urlList")) or _http_urls(obj.get("url_list"))
+        if urls:
+            return urls
+        for v in obj.values():
+            urls = _find_url_list(v)
+            if urls:
+                return urls
+    elif isinstance(obj, list):
+        for v in obj:
+            urls = _find_url_list(v)
+            if urls:
+                return urls
+    return []
+
+
+def _find_tiktok_image_urls(obj) -> list[str]:
+    """Locate a photo post's slides anywhere in TikTok's page data.
+
+    Looks for an ``images`` list of slide dicts rather than one fixed path, so
+    it survives TikTok moving/renaming the surrounding keys (``imagePost`` on
+    the web, ``image_post_info`` in the app API).
+    """
+    if isinstance(obj, dict):
+        imgs = obj.get("images")
+        if isinstance(imgs, list) and imgs and all(isinstance(i, dict) for i in imgs):
+            urls = []
+            for img in imgs:
+                candidates = _find_url_list(img)
+                if candidates:
+                    # Prefer a JPEG variant when TikTok offers several encodings
+                    urls.append(next((u for u in candidates if ".jpeg" in u or ".jpg" in u), candidates[0]))
+            if urls:
+                return urls
+        for v in obj.values():
+            urls = _find_tiktok_image_urls(v)
+            if urls:
+                return urls
+    elif isinstance(obj, list):
+        for v in obj:
+            urls = _find_tiktok_image_urls(v)
+            if urls:
+                return urls
+    return []
+
+
 def _slideshow_ffmpeg_cmd(img_paths: list[str], audio_path: str | None, out: str,
                           seconds_per_image: float) -> list[str]:
     """Build the ffmpeg command that turns still images (+ optional music) into an MP4.
@@ -409,22 +469,27 @@ def download_tiktok_slideshow(url: str, output_dir: str, seconds_per_image: floa
     from yt_dlp.networking import Request as YdlRequest
     from yt_dlp.extractor.tiktok import TikTokIE
 
-    m = re.search(r"/photo/(\d+)", url)
-    video_id = m.group(1) if m else "photo"
+    m = re.search(r"tiktok\.com/(?:@([\w.-]+)/)?photo/(\d+)", url)
+    if not m:
+        raise RuntimeError("Couldn't read the post ID from this TikTok photo link")
+    user_id, video_id = m.group(1), m.group(2)
     ydl = yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True})
     ie = TikTokIE()
     ie.set_downloader(ydl)
-    item, _status = ie._extract_web_data_and_status(url, video_id)
+    # yt-dlp never fetches the link as given: it always requests the canonical
+    # /@user/video/<id> route, which is the page that carries the full item data.
+    item, status = ie._extract_web_data_and_status(ie._create_url(user_id, video_id), video_id)
     item = item or {}
 
-    image_urls: list[str] = []
-    for img in (item.get("imagePost") or {}).get("images") or []:
-        candidates = [u for u in ((img.get("imageURL") or {}).get("urlList") or []) if u]
-        if candidates:
-            # Prefer a JPEG variant when TikTok offers several encodings
-            image_urls.append(next((u for u in candidates if ".jpeg" in u or ".jpg" in u), candidates[0]))
+    image_urls = _find_tiktok_image_urls(item)
     if not image_urls:
-        raise RuntimeError("Couldn't find any images in this TikTok photo post")
+        logger.error("TikTok photo %s: no images in page data (status=%s, keys=%s)",
+                     video_id, status, sorted(item.keys()))
+        if status in (10216, 10222):
+            raise RuntimeError("This TikTok post is private")
+        if status == 10204:
+            raise RuntimeError("TikTok is blocking this server from viewing the post")
+        raise RuntimeError(f"Couldn't find any images in this TikTok photo post (status {status})")
     if len(image_urls) == 1:
         # A single photo isn't really a slideshow — hold it long enough to hear the music
         seconds_per_image = 10.0
